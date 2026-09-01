@@ -1,97 +1,124 @@
-# 飞书本地通知验证器
+# 飞书 Perfecto → QQ 群转发器
 
-这是一个只在本机运行的飞书通知捕获工具。它不读取飞书私有数据库；单独运行 `start.command` 时不会访问网络，也不会转发消息。
+这是一个只在本机运行的转发工具。macOS 飞书通知仅用于唤醒；真实消息由飞书用户 API 从固定的 Perfecto 单聊中读取，再通过 QQ 官方机器人 API 转发到已绑定群。
 
-工具通过 macOS 辅助功能观察通知中心，只记录显示名称为 `Lark`、`Feishu` 或 `飞书` 的新增通知。每条记录会同时输出到终端，并追加到 `lark-notifications.jsonl`。
+当前支持普通文本和图片。文本按飞书 `message_id` 转发；图片先以飞书用户身份下载，再上传 QQ 取得 `file_info`，最后以 `RICH_MEDIA` 发送。
 
-## 开始验证
+## 工作方式
 
-1. 双击 `start.command`。
-2. 首次运行时，macOS 会要求辅助功能权限。打开“系统设置 → 隐私与安全性 → 辅助功能”，允许启动该脚本的终端应用。
-3. 权限生效后重新双击 `start.command`。
-4. 让其他账号向当前飞书发送几条测试消息。
-5. 查看终端输出，或打开同目录下的 `lark-notifications.jsonl`。
-6. 在终端按 `Control+C` 停止。
+1. Swift 程序通过 macOS 辅助功能订阅通知中心的 AX 事件。
+2. 发现 Perfecto 通知后，只写一条不含正文和正文派生值的唤醒记录。
+3. Python 转发器使用固定 profile `tenant-105183` 定位唯一 Perfecto 联系人和单聊。
+4. 根据持久化的 `message_position` 拉取游标之后的消息，并按 `message_id` 去重。
+5. 文本直接发送到 QQ；图片临时下载、上传和发送后立即清理。
+6. 每条消息成功发送或明确跳过后才推进游标；发送失败不会越过该消息。
 
-## 转发到 QQ 群
+通知与消息不是一一对应关系。macOS 可能把连续同文消息折叠成汇总通知，因此通知只负责触发一次 API 同步；一次触发可以取回多条消息。重复通知再次触发时，游标会使结果为空，不会重复转发。
 
-QQ 桥接使用 QQ 官方机器人 WebSocket 和 OpenAPI。AppSecret 保存在 macOS 钥匙串，不会写入项目文件。
+## 前置条件
 
-首次使用依次运行：
+- macOS 已运行飞书客户端，并允许本程序使用“辅助功能”。
+- `lark-cli` 中存在并已授权 profile `tenant-105183`，对应用户为“用户105183”。
+- 该账号与 Perfecto 有唯一的点对点会话。
+- QQ 机器人密钥已保存在 macOS 钥匙串，目标群已经绑定并允许机器人主动发言。
+- Python 3.12、Swift 5.10 或更高版本。
+
+所有飞书 CLI 请求都会显式携带 `--profile tenant-105183`，不会切换或依赖默认 profile。
+
+## 首次检查与绑定
+
+创建 Python 环境并安装 QQ 官方 SDK：
 
 ```bash
-.venv/bin/python qq_bridge.py check
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements-qq.txt
+```
+
+检查飞书用户授权、Perfecto 固定会话、QQ 凭证和网关：
+
+```bash
+.venv/bin/python qq_bridge.py check \
+  --lark-profile tenant-105183 \
+  --lark-contact Perfecto
+```
+
+如尚未绑定 QQ 群：
+
+```bash
 .venv/bin/python qq_bridge.py bind
+```
+
+随后在目标群发送 `@qclaw 绑定测试`。群主还需在手机 QQ 的“群设置 → 机器人 → qclaw → 机器人权限设置”中开启“机器人主动在群聊内发言”。
+
+测试 QQ 主动文本消息：
+
+```bash
 .venv/bin/python qq_bridge.py test
 ```
 
-运行 `bind` 后，在目标 QQ 群中发送 `@qclaw 绑定测试`。群主还需要在手机 QQ 的“群设置 → 机器人 → qclaw → 机器人权限设置”中开启“机器人主动在群聊内发言”；否则被动回复可用，但自动转发会被 QQ 拒绝。
+## 启动转发
 
-绑定和主动消息测试成功后，双击 `start-forwarder.command`，即可同时启动飞书通知捕获和 QQ 转发。首次建立转发游标时从 JSONL 文件末尾开始，不会重放已有记录；后续异常重启会从已确认的字节位置继续。
+双击 `start-forwarder.command`。脚本会：
 
-## 本机验证结果
+- 构建 Release 版通知监听器；
+- 从当前通知文件末尾建立或恢复字节游标；
+- 从 Perfecto 会话当前最新位置建立或恢复消息游标；
+- 同时启动通知监听器和 Python 转发器。
 
-2026 年 9 月 1 日在 macOS 15.6 和当前飞书客户端上完成了基础文本通知验证：
+启动时不会重放历史消息。异常重启后会从已确认的消息位置继续。
 
-- macOS 实际投递 2 条飞书通知，验证器捕获 2 条，当前小样本命中率为 2/2。
-- 两次从系统投递到 JSONL 落盘的延迟约为 0.35 秒和 0.33 秒。
-- 两条记录的应用标识、标题、正文、原始文本和去重指纹均完整，未出现重复记录。
-- 当前结论只覆盖普通文本通知；飞书前台、静音群、图片、文件、卡片和专注模式仍需单独测试。
+按 `Control+C` 停止。脚本会同时结束通知监听器和转发器。
 
-启动时已有的通知默认不会写入，避免把历史通知误当作新消息。如需检查通知中心里已经存在的飞书通知，可以运行：
-
-```bash
-./start.command --include-existing
-```
-
-只检查权限和运行环境：
+如果明确需要放弃尚未处理的历史记录并把两类游标都移到当前末尾，可手动执行：
 
 ```bash
-swift run lark-notification-probe --check
+.venv/bin/python qq_bridge.py prime \
+  --force-end \
+  --lark-profile tenant-105183 \
+  --lark-contact Perfecto
 ```
 
-限时运行 60 秒：
+## 单独检查通知监听
+
+`start.command` 只启动本地通知监听，不访问飞书或 QQ API：
 
 ```bash
 ./start.command --duration 60
 ```
 
-## 输出格式
+只检查辅助功能权限和运行环境：
 
-每行是一条独立 JSON，例如：
+```bash
+swift run lark-notification-probe --check
+```
+
+新版唤醒记录不包含飞书正文：
 
 ```json
 {
   "app": "Lark",
-  "body": "收到请回复",
   "bundle_id": "com.electron.lark",
-  "fingerprint": "1c62dc4063dcf03a",
   "observed_at": "2026-09-01T10:00:00.000Z",
-  "raw_texts": ["Lark", "王小明", "收到请回复"],
-  "schema_version": 1,
+  "schema_version": 2,
   "source": "macos_accessibility",
-  "subtitle": "",
-  "title": "王小明",
-  "type": "notification"
+  "title": "Perfecto",
+  "type": "notification_wakeup"
 }
 ```
 
-`raw_texts` 是本阶段最重要的校准字段，可以看出不同类型飞书通知在系统里的真实结构。
+## 2026-09-01 本机验收结果
 
-## 建议测试矩阵
-
-| 场景 | 期望 |
-|---|---|
-| 飞书在后台的私聊文本 | 捕获标题和正文 |
-| 飞书在后台的群聊文本 | 捕获群名、发送者或正文 |
-| 飞书位于前台 | 记录实际是否仍有系统通知 |
-| 图片、文件、卡片 | 记录系统提供的摘要文本 |
-| 静音群聊 | 确认是否完全没有系统通知 |
-| macOS 专注模式 | 确认通知是否延迟或缺失 |
+- 普通文本通知可唤醒固定会话 API，并唯一定位真实消息 ID。
+- 同一通知重复解析得到相同消息 ID。
+- 两条连续同文消息在 API 中位置相邻、消息 ID 不同；游标模型会转发两条。
+- macOS 会把第二条同文通知折叠成汇总通知，证明不能用通知正文或通知数量做去重。
+- 飞书图片以用户身份下载成功，样本为 JPEG、196,240 字节、736 × 768。
+- 同一图片通过 QQ 官方 SDK 上传取得 `file_info`，以 `RICH_MEDIA` 发送并在测试群可见。
 
 ## 隐私与限制
 
-- JSONL 文件可能包含真实消息正文，测试结束后请按需删除。
-- 这里只能捕获 macOS 实际展示给用户的通知，不是完整的飞书消息流。
-- 静音、关闭预览、飞书前台抑制通知、专注模式和系统通知折叠都可能造成缺失或字段不完整。
-- `start.command` 仍然是纯本地模式；只有运行 `qq_bridge.py` 或 `start-forwarder.command` 时才会把新通知正文发送到 QQ 官方接口。
+- 通知 JSONL 只保存唤醒所需的应用名、标题和时间，不保存消息正文或正文派生值。
+- 飞书 API 返回的文本只在内存中处理；图片只存在于系统临时目录，发送结束后自动删除。
+- `.qq-forwarder-state.json` 保存 QQ 群绑定、通知字节位置、飞书会话标识、消息位置和最近消息 ID，不保存飞书正文或图片。
+- 静音、关闭飞书通知、专注模式、飞书前台抑制通知或辅助功能权限失效时，macOS 可能不产生唤醒事件；没有唤醒事件就不会主动同步。
+- 当前只转发 Perfecto 单聊中的普通文本和图片；其他消息类型会记录类型并推进游标，不会误当文本发送。
