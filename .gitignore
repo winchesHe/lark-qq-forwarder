@@ -1,0 +1,7 @@
+.build/
+.venv/
+__pycache__/
+*.pyc
+.qq-forwarder-state.json
+.qq-forwarder-state.json.tmp
+lark-notifications.jsonl
