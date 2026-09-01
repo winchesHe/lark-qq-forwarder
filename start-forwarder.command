@@ -5,6 +5,8 @@ set -euo pipefail
 FORWARDER_DIR="${0:A:h}"
 VENV_DIR="$FORWARDER_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
+LARK_FORWARDER_PROFILE="tenant-105183"
+LARK_FORWARDER_CONTACT="Perfecto"
 
 cd "$FORWARDER_DIR"
 
@@ -14,7 +16,6 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 /usr/bin/swift build -c release
-"$PYTHON" "$FORWARDER_DIR/qq_bridge.py" prime
 
 PROBE_PID=""
 BRIDGE_PID=""
@@ -30,7 +31,13 @@ trap cleanup EXIT INT TERM
   --output "$FORWARDER_DIR/lark-notifications.jsonl" &
 PROBE_PID=$!
 
-"$PYTHON" "$FORWARDER_DIR/qq_bridge.py" run &
+"$PYTHON" "$FORWARDER_DIR/qq_bridge.py" prime \
+  --lark-profile "$LARK_FORWARDER_PROFILE" \
+  --lark-contact "$LARK_FORWARDER_CONTACT"
+
+"$PYTHON" "$FORWARDER_DIR/qq_bridge.py" run \
+  --lark-profile "$LARK_FORWARDER_PROFILE" \
+  --lark-contact "$LARK_FORWARDER_CONTACT" &
 BRIDGE_PID=$!
 
 echo "飞书 → QQ 转发已启动。按 Control+C 停止。"

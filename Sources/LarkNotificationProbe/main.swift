@@ -130,17 +130,13 @@ private final class JSONLWriter {
 
   func append(_ notification: ParsedNotification) {
     let payload: [String: Any] = [
-      "schema_version": 1,
-      "type": "notification",
+      "schema_version": 2,
+      "type": "notification_wakeup",
       "source": "macos_accessibility",
       "observed_at": Self.timestamp(),
       "bundle_id": "com.electron.lark",
       "app": notification.app,
       "title": notification.title,
-      "body": notification.body,
-      "subtitle": notification.subtitle,
-      "raw_texts": notification.rawTexts,
-      "fingerprint": notification.fingerprint,
     ]
 
     guard JSONSerialization.isValidJSONObject(payload),
@@ -170,10 +166,8 @@ private final class NotificationProbe {
   private let configuration: Configuration
   private let writer: JSONLWriter
   private var observers: [pid_t: AXObserver] = [:]
-  private var activeNotificationKeys = Set<String>()
-  private var lastDeliveredAt: [String: Date] = [:]
-  private var isPrimed = false
   private var scanScheduled = false
+  private var workspaceObserver: NSObjectProtocol?
 
   private let notificationBundleIDs: Set<String> = [
     "com.apple.notificationcenterui",
@@ -184,10 +178,13 @@ private final class NotificationProbe {
     "UserNotificationCenter",
   ]
   private let observedNotifications: [CFString] = [
+    kAXCreatedNotification as CFString,
     kAXWindowCreatedNotification as CFString,
     kAXMainWindowChangedNotification as CFString,
     kAXFocusedWindowChangedNotification as CFString,
     kAXFocusedUIElementChangedNotification as CFString,
+    kAXValueChangedNotification as CFString,
+    kAXTitleChangedNotification as CFString,
   ]
 
   init(configuration: Configuration) throws {
@@ -206,11 +203,8 @@ private final class NotificationProbe {
     }
 
     registerObservers(for: apps)
-    scan()
-
-    Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
-      self?.scan()
-    }
+    registerWorkspaceObserver()
+    scan(shouldEmit: configuration.includeExisting)
 
     if let duration = configuration.duration {
       Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { _ in
@@ -283,7 +277,7 @@ private final class NotificationProbe {
       }
 
       guard registrationCount > 0 else {
-        log("pid=\(pid) 不支持目标辅助功能事件，将由定时扫描兜底")
+        log("pid=\(pid) 不支持目标辅助功能事件")
         continue
       }
 
@@ -296,6 +290,22 @@ private final class NotificationProbe {
     }
   }
 
+  private func registerWorkspaceObserver() {
+    workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didLaunchApplicationNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] notification in
+      guard
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+          as? NSRunningApplication
+      else {
+        return
+      }
+      self?.registerObservers(for: [app])
+    }
+  }
+
   private func scheduleScan() {
     guard !scanScheduled else {
       return
@@ -303,11 +313,11 @@ private final class NotificationProbe {
     scanScheduled = true
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
       self?.scanScheduled = false
-      self?.scan()
+      self?.scan(shouldEmit: true)
     }
   }
 
-  private func scan() {
+  private func scan(shouldEmit: Bool) {
     let apps = notificationCenterApplications()
     registerObservers(for: apps)
 
@@ -346,30 +356,20 @@ private final class NotificationProbe {
       }
     }
 
-    let currentKeys = Set(capturedByKey.keys)
-    let newKeys =
-      configuration.includeExisting && !isPrimed
-      ? currentKeys
-      : currentKeys.subtracting(activeNotificationKeys)
-
-    if isPrimed || configuration.includeExisting {
-      for key in newKeys.sorted() {
-        guard let notification = capturedByKey[key],
-          shouldDeliver(notification)
-        else {
-          continue
-        }
-        writer.append(notification)
-        log(
-          "捕获飞书通知：title=\(notification.title.debugDescription) "
-            + "body=\(notification.body.debugDescription)"
-        )
-      }
+    guard shouldEmit else {
+      return
     }
 
-    activeNotificationKeys = currentKeys
-    isPrimed = true
-    pruneDeliveredFingerprints()
+    var emittedTitles = Set<String>()
+    for key in capturedByKey.keys.sorted() {
+      guard let notification = capturedByKey[key],
+        emittedTitles.insert(notification.title).inserted
+      else {
+        continue
+      }
+      writer.append(notification)
+      log("捕获飞书通知唤醒信号：title=\(notification.title.debugDescription)")
+    }
   }
 
   private func capture(
@@ -502,24 +502,6 @@ private final class NotificationProbe {
       return nil
     }
     return value as? T
-  }
-
-  private func shouldDeliver(_ notification: ParsedNotification) -> Bool {
-    let now = Date()
-    if let lastDelivered = lastDeliveredAt[notification.fingerprint],
-      now.timeIntervalSince(lastDelivered) < 3
-    {
-      return false
-    }
-    lastDeliveredAt[notification.fingerprint] = now
-    return true
-  }
-
-  private func pruneDeliveredFingerprints() {
-    let now = Date()
-    lastDeliveredAt = lastDeliveredAt.filter {
-      now.timeIntervalSince($0.value) < 30
-    }
   }
 
   private func log(_ message: String, always: Bool = false) {

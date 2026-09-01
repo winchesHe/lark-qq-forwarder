@@ -6,14 +6,27 @@ import argparse
 import asyncio
 import json
 import logging
+import re
+import shutil
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from qqbot_agent_sdk import EventParser, QQApiClient, QQWebSocket, WSCallbacks
+from qqbot_agent_sdk import (
+    MEDIA_TYPE_IMAGE,
+    EventParser,
+    MediaInfo,
+    MediaUploader,
+    MessageToCreate,
+    QQApiClient,
+    QQMessageType,
+    QQWebSocket,
+    WSCallbacks,
+)
 
 
 APP_ID = "1905539559"
@@ -21,6 +34,9 @@ KEYCHAIN_SERVICE = "codex.lark-qq-forwarder.qqbot-secret"
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT = PROJECT_DIR / "lark-notifications.jsonl"
 DEFAULT_STATE = PROJECT_DIR / ".qq-forwarder-state.json"
+DEFAULT_LARK_PROFILE = "tenant-105183"
+DEFAULT_LARK_CONTACT = "Perfecto"
+IMAGE_KEY_PATTERN = re.compile(r"\b(img_[A-Za-z0-9_-]{10,})\b")
 
 
 class BridgeError(RuntimeError):
@@ -56,13 +72,18 @@ class StateStore:
     @classmethod
     def load(cls, path: Path) -> "StateStore":
         if not path.exists():
-            return cls(path=path, data={"schema_version": 1, "app_id": APP_ID})
+            return cls(
+                path=path,
+                data={"schema_version": 2, "app_id": APP_ID},
+            )
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise BridgeError(f"无法读取转发状态文件：{path}") from exc
         if data.get("app_id") not in (None, APP_ID):
             raise BridgeError("状态文件属于另一个 QQ 机器人")
+        data.pop("recent_fingerprints", None)
+        data["schema_version"] = 2
         data["app_id"] = APP_ID
         return cls(path=path, data=data)
 
@@ -71,11 +92,16 @@ class StateStore:
         value = self.data.get("group_openid")
         return value if isinstance(value, str) and value else None
 
+    @property
+    def message_position(self) -> Optional[int]:
+        value = self.data.get("lark_message_position")
+        return value if isinstance(value, int) and value >= 0 else None
+
     def bind_group(self, group_openid: str) -> None:
         self.data["group_openid"] = group_openid
         self.save()
 
-    def prime(self, input_path: Path, *, force_end: bool = False) -> int:
+    def prime_input(self, input_path: Path, *, force_end: bool = False) -> int:
         absolute_path = str(input_path.resolve())
         current_size = input_path.stat().st_size if input_path.exists() else 0
         stored_path = self.data.get("input_path")
@@ -93,20 +119,52 @@ class StateStore:
         self.save()
         return int(self.data["offset"])
 
-    def advance(self, offset: int, fingerprint: Optional[str] = None) -> None:
+    def prime_lark(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        latest_position: int,
+        force_end: bool = False,
+    ) -> int:
+        target_changed = (
+            self.data.get("lark_chat_id") != chat_id
+            or self.data.get("lark_sender_id") != sender_id
+        )
+        if target_changed or force_end or self.message_position is None:
+            self.data["lark_message_position"] = latest_position
+            self.data["recent_message_ids"] = []
+        self.data["lark_chat_id"] = chat_id
+        self.data["lark_sender_id"] = sender_id
+        self.save()
+        return int(self.data["lark_message_position"])
+
+    def assert_lark_target(self, *, chat_id: str, sender_id: str) -> None:
+        if (
+            self.data.get("lark_chat_id") != chat_id
+            or self.data.get("lark_sender_id") != sender_id
+            or self.message_position is None
+        ):
+            raise BridgeError("飞书目标或消息游标尚未初始化，请先运行 prime")
+
+    def advance_input(self, offset: int) -> None:
         self.data["offset"] = offset
-        if fingerprint:
-            recent = self.data.get("recent_fingerprints", [])
-            if not isinstance(recent, list):
-                recent = []
-            recent = [value for value in recent if value != fingerprint]
-            recent.append(fingerprint)
-            self.data["recent_fingerprints"] = recent[-100:]
         self.save()
 
-    def has_sent(self, fingerprint: str) -> bool:
-        recent = self.data.get("recent_fingerprints", [])
-        return isinstance(recent, list) and fingerprint in recent
+    def advance_message(self, position: int, message_id: str) -> None:
+        current = self.message_position or 0
+        self.data["lark_message_position"] = max(current, position)
+        recent = self.data.get("recent_message_ids", [])
+        if not isinstance(recent, list):
+            recent = []
+        recent = [value for value in recent if value != message_id]
+        recent.append(message_id)
+        self.data["recent_message_ids"] = recent[-200:]
+        self.save()
+
+    def has_processed_message(self, message_id: str) -> bool:
+        recent = self.data.get("recent_message_ids", [])
+        return isinstance(recent, list) and message_id in recent
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,16 +200,232 @@ def read_next_record(input_path: Path, offset: int) -> Optional[JSONLRecord]:
     return JSONLRecord(next_offset=next_offset, payload=payload)
 
 
-def format_notification(payload: dict[str, Any]) -> str:
-    title = str(payload.get("title") or "飞书通知").strip()
-    subtitle = str(payload.get("subtitle") or "").strip()
-    body = str(payload.get("body") or "").strip()
-    lines = ["【飞书通知】", title]
-    if subtitle and subtitle != title:
-        lines.append(subtitle)
-    if body:
-        lines.append(body)
-    return "\n".join(lines)
+def notification_matches_contact(
+    payload: dict[str, Any], contact_name: str
+) -> bool:
+    clue = contact_name.strip().casefold()
+    if not clue:
+        return False
+    values = [payload.get("title")]
+    raw_texts = payload.get("raw_texts")
+    if isinstance(raw_texts, list):
+        values.extend(raw_texts)
+    return any(
+        clue in value.strip().casefold()
+        for value in values
+        if isinstance(value, str)
+    )
+
+
+def format_lark_text(contact_name: str, content: str) -> str:
+    return f"【飞书·{contact_name}】\n{content.strip()}"
+
+
+@dataclass(frozen=True)
+class LarkTarget:
+    name: str
+    sender_id: str
+    chat_id: str
+
+
+@dataclass(frozen=True)
+class LarkMessage:
+    message_id: str
+    position: int
+    msg_type: str
+    sender_id: str
+    content: str
+
+
+def _walk_objects(root: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    queue = [root]
+    seen: set[int] = set()
+    while queue:
+        value = queue.pop(0)
+        if not isinstance(value, (dict, list)):
+            continue
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(value, dict):
+            result.append(value)
+            queue.extend(value.values())
+        else:
+            queue.extend(value)
+    return result
+
+
+def extract_lark_messages(payload: Any) -> list[LarkMessage]:
+    messages: list[LarkMessage] = []
+    seen_ids: set[str] = set()
+    for value in _walk_objects(payload):
+        message_id = value.get("message_id")
+        position = value.get("message_position")
+        msg_type = value.get("msg_type")
+        sender = value.get("sender")
+        if not (
+            isinstance(message_id, str)
+            and isinstance(msg_type, str)
+            and isinstance(sender, dict)
+        ):
+            continue
+        try:
+            numeric_position = int(position)
+        except (TypeError, ValueError):
+            continue
+        sender_id = sender.get("id")
+        if not isinstance(sender_id, str) or message_id in seen_ids:
+            continue
+        content = value.get("content")
+        messages.append(
+            LarkMessage(
+                message_id=message_id,
+                position=numeric_position,
+                msg_type=msg_type,
+                sender_id=sender_id,
+                content=content if isinstance(content, str) else "",
+            )
+        )
+        seen_ids.add(message_id)
+    return messages
+
+
+def pending_messages(
+    messages: list[LarkMessage], cursor: int
+) -> list[LarkMessage]:
+    return sorted(
+        (message for message in messages if message.position > cursor),
+        key=lambda message: message.position,
+    )
+
+
+def extract_image_key(content: str) -> Optional[str]:
+    match = IMAGE_KEY_PATTERN.search(content)
+    return match.group(1) if match else None
+
+
+class LarkClient:
+    def __init__(self, *, profile: str, binary: Optional[str] = None) -> None:
+        self.profile = profile
+        self.binary = binary or shutil.which("lark-cli") or "lark-cli"
+
+    def _run(self, arguments: list[str], *, cwd: Optional[Path] = None) -> Any:
+        try:
+            result = subprocess.run(
+                [self.binary, *arguments, "--profile", self.profile],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise BridgeError("无法启动 lark-cli") from exc
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise BridgeError("lark-cli 未返回有效 JSON") from exc
+        if not isinstance(payload, dict):
+            raise BridgeError("lark-cli 返回了不支持的 JSON 结构")
+        if result.returncode != 0 or payload.get("ok") is False:
+            error = payload.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            raise BridgeError(f"飞书 API 调用失败：{message or '未知错误'}")
+        return payload
+
+    def resolve_target(self, contact_name: str) -> LarkTarget:
+        payload = self._run(
+            [
+                "contact",
+                "+search-user",
+                "--query",
+                contact_name,
+                "--has-chatted",
+                "--as",
+                "user",
+                "--format",
+                "json",
+            ]
+        )
+        candidates: dict[str, dict[str, Any]] = {}
+        for value in _walk_objects(payload):
+            open_id = value.get("open_id")
+            p2p_chat_id = value.get("p2p_chat_id")
+            name = value.get("name") or value.get("localized_name")
+            if not (
+                isinstance(open_id, str)
+                and isinstance(p2p_chat_id, str)
+                and isinstance(name, str)
+            ):
+                continue
+            if contact_name.casefold() not in name.casefold():
+                continue
+            candidates[open_id] = value
+        if len(candidates) != 1:
+            raise BridgeError(
+                f"联系人 {contact_name} 必须唯一匹配，当前匹配 {len(candidates)} 个"
+            )
+        value = next(iter(candidates.values()))
+        return LarkTarget(
+            name=str(value.get("name") or value.get("localized_name")),
+            sender_id=str(value["open_id"]),
+            chat_id=str(value["p2p_chat_id"]),
+        )
+
+    def list_messages(self, chat_id: str) -> list[LarkMessage]:
+        payload = self._run(
+            [
+                "im",
+                "+chat-messages-list",
+                "--chat-id",
+                chat_id,
+                "--order",
+                "desc",
+                "--page-size",
+                "50",
+                "--page-all",
+                "--page-limit",
+                "100",
+                "--no-reactions",
+                "--as",
+                "user",
+                "--format",
+                "json",
+            ]
+        )
+        return extract_lark_messages(payload)
+
+    def download_image(
+        self,
+        *,
+        message_id: str,
+        image_key: str,
+        output_directory: Path,
+    ) -> Path:
+        self._run(
+            [
+                "im",
+                "+messages-resources-download",
+                "--message-id",
+                message_id,
+                "--file-key",
+                image_key,
+                "--type",
+                "image",
+                "--output",
+                "lark-image",
+                "--as",
+                "user",
+                "--format",
+                "json",
+            ],
+            cwd=output_directory,
+        )
+        files = [path for path in output_directory.iterdir() if path.is_file()]
+        if len(files) != 1 or files[0].stat().st_size <= 0:
+            raise BridgeError("飞书图片下载结果不完整")
+        return files[0]
 
 
 class GatewaySession:
@@ -202,6 +476,38 @@ async def send_group_text(
     return response
 
 
+async def send_group_image(
+    api: QQApiClient,
+    http_client: httpx.AsyncClient,
+    group_openid: str,
+    image_path: Path,
+) -> dict[str, Any]:
+    try:
+        uploader = MediaUploader(api, http_client, log_tag="LarkQQForwarder")
+        file_info = await uploader.upload(
+            "group",
+            group_openid,
+            str(image_path),
+            MEDIA_TYPE_IMAGE,
+            file_name="lark-image.jpg",
+        )
+        if not file_info:
+            raise BridgeError("QQ 图片上传未返回 file_info")
+        response = await api.post_group_message(
+            group_openid,
+            MessageToCreate(
+                msg_type=QQMessageType.RICH_MEDIA,
+                msg_seq=api.next_msg_seq(),
+                media=MediaInfo(file_info=file_info),
+            ),
+        )
+    except RuntimeError as exc:
+        raise BridgeError("QQ 图片上传或发送失败") from exc
+    if not response.get("id"):
+        raise BridgeError("QQ 图片发送未返回消息 ID")
+    return response
+
+
 async def bind_group(state: StateStore, *, rebind: bool = False) -> str:
     if state.group_openid and not rebind:
         print("群聊已经绑定；如需更换目标群，请使用 bind --rebind")
@@ -221,7 +527,7 @@ async def bind_group(state: StateStore, *, rebind: bool = False) -> str:
         await send_group_text(
             api,
             event.chat_id,
-            "绑定成功。接下来会把本机捕获到的新飞书通知转发到这个群。",
+            "绑定成功。接下来会把 Perfecto 的新飞书消息转发到这个群。",
             reply_to=event.message_id,
         )
         print("已收到群聊 @ 消息并完成绑定。")
@@ -276,25 +582,90 @@ async def send_test(state: StateStore) -> None:
         await send_group_text(
             api,
             group_openid,
-            "QQ 主动消息测试成功。下一条新飞书通知将由本机自动转发。",
+            "QQ 主动消息测试成功。下一条 Perfecto 飞书消息将由本机自动转发。",
         )
         print("QQ 主动测试消息发送成功。")
     finally:
         await http_client.aclose()
 
 
+async def process_pending_messages(
+    *,
+    state: StateStore,
+    lark: LarkClient,
+    target: LarkTarget,
+    api: QQApiClient,
+    http_client: httpx.AsyncClient,
+    group_openid: str,
+) -> tuple[int, int]:
+    cursor = state.message_position
+    if cursor is None:
+        raise BridgeError("飞书消息游标尚未初始化")
+    messages = await asyncio.to_thread(lark.list_messages, target.chat_id)
+    pending = pending_messages(messages, cursor)
+    forwarded = 0
+
+    for message in pending:
+        if state.has_processed_message(message.message_id):
+            state.advance_message(message.position, message.message_id)
+            continue
+        if message.sender_id != target.sender_id:
+            state.advance_message(message.position, message.message_id)
+            continue
+
+        if message.msg_type == "text":
+            if message.content.strip():
+                await send_group_text(
+                    api,
+                    group_openid,
+                    format_lark_text(target.name, message.content),
+                )
+                forwarded += 1
+        elif message.msg_type == "image":
+            image_key = extract_image_key(message.content)
+            if not image_key:
+                raise BridgeError("飞书图片消息缺少 image_key")
+            with tempfile.TemporaryDirectory(prefix="lark-qq-image-") as directory:
+                image_path = await asyncio.to_thread(
+                    lark.download_image,
+                    message_id=message.message_id,
+                    image_key=image_key,
+                    output_directory=Path(directory),
+                )
+                await send_group_image(
+                    api,
+                    http_client,
+                    group_openid,
+                    image_path,
+                )
+                forwarded += 1
+        else:
+            logging.info("跳过暂不支持的飞书消息类型：%s", message.msg_type)
+
+        state.advance_message(message.position, message.message_id)
+
+    return len(pending), forwarded
+
+
 async def forward_forever(
     state: StateStore,
     input_path: Path,
     *,
+    lark: LarkClient,
+    target: LarkTarget,
+    contact_name: str,
     poll_interval: float = 0.25,
 ) -> None:
     group_openid = state.group_openid
     if not group_openid:
         raise BridgeError("尚未绑定 QQ 群，请先运行 bind")
-    offset = state.prime(input_path)
+    state.assert_lark_target(
+        chat_id=target.chat_id,
+        sender_id=target.sender_id,
+    )
+    offset = state.prime_input(input_path)
     api, http_client = await create_api()
-    print(f"飞书 → QQ 转发已启动；从字节位置 {offset} 继续监听。")
+    print("飞书 → QQ 转发已启动；通知仅作唤醒，正文由飞书 API 获取。")
 
     try:
         while True:
@@ -303,41 +674,69 @@ async def forward_forever(
                 await asyncio.sleep(poll_interval)
                 continue
 
-            offset = record.next_offset
             payload = record.payload
             if payload is None:
-                state.advance(offset)
-                print("跳过一行无法解析的 JSONL 记录。")
+                offset = record.next_offset
+                state.advance_input(offset)
+                print("跳过一行无法解析的通知唤醒记录。")
+                continue
+            if not notification_matches_contact(payload, contact_name):
+                offset = record.next_offset
+                state.advance_input(offset)
                 continue
 
-            fingerprint = str(payload.get("fingerprint") or "")
-            if fingerprint and state.has_sent(fingerprint):
-                state.advance(offset)
-                continue
-
-            await send_group_text(
-                api,
-                group_openid,
-                format_notification(payload),
+            pending_count, forwarded_count = await process_pending_messages(
+                state=state,
+                lark=lark,
+                target=target,
+                api=api,
+                http_client=http_client,
+                group_openid=group_openid,
             )
-            state.advance(offset, fingerprint or None)
-            title = str(payload.get("title") or "飞书通知")
-            print(f"已转发：{title}")
+            offset = record.next_offset
+            state.advance_input(offset)
+            print(
+                f"飞书 API 检查完成：未处理 {pending_count} 条，"
+                f"已转发 {forwarded_count} 条。"
+            )
     finally:
         await http_client.aclose()
 
 
-async def check_connection() -> None:
+async def check_connections(lark: LarkClient, contact_name: str) -> None:
+    target = await asyncio.to_thread(lark.resolve_target, contact_name)
+    await asyncio.to_thread(lark.list_messages, target.chat_id)
     api, http_client = await create_api()
     try:
         await asyncio.to_thread(api.get_gateway_url_sync)
-        print("QQ 凭证和网关连接检查通过。")
+        print("飞书用户授权、目标会话、QQ 凭证和网关检查通过。")
     finally:
         await http_client.aclose()
 
 
+async def prime_forwarder(
+    *,
+    state: StateStore,
+    input_path: Path,
+    lark: LarkClient,
+    contact_name: str,
+    force_end: bool,
+) -> None:
+    target = await asyncio.to_thread(lark.resolve_target, contact_name)
+    messages = await asyncio.to_thread(lark.list_messages, target.chat_id)
+    latest_position = max((message.position for message in messages), default=0)
+    offset = state.prime_input(input_path, force_end=force_end)
+    position = state.prime_lark(
+        chat_id=target.chat_id,
+        sender_id=target.sender_id,
+        latest_position=latest_position,
+        force_end=force_end,
+    )
+    print(f"转发起点已设置：通知字节位置 {offset}，飞书消息位置 {position}。")
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="飞书本地通知到 QQ 群转发器")
+    parser = argparse.ArgumentParser(description="飞书 Perfecto 消息到 QQ 群转发器")
     parser.add_argument(
         "command", choices=["check", "prime", "bind", "test", "run"]
     )
@@ -345,23 +744,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--rebind", action="store_true")
     parser.add_argument("--force-end", action="store_true")
+    parser.add_argument("--lark-profile", default=DEFAULT_LARK_PROFILE)
+    parser.add_argument("--lark-contact", default=DEFAULT_LARK_CONTACT)
+    parser.add_argument("--lark-cli")
     return parser.parse_args()
 
 
 async def async_main() -> None:
     args = parse_args()
     state = StateStore.load(args.state)
+    lark = LarkClient(profile=args.lark_profile, binary=args.lark_cli)
+
     if args.command == "check":
-        await check_connection()
+        await check_connections(lark, args.lark_contact)
     elif args.command == "prime":
-        offset = state.prime(args.input, force_end=args.force_end)
-        print(f"转发起点已设为字节位置 {offset}。")
+        await prime_forwarder(
+            state=state,
+            input_path=args.input,
+            lark=lark,
+            contact_name=args.lark_contact,
+            force_end=args.force_end,
+        )
     elif args.command == "bind":
         await bind_group(state, rebind=args.rebind)
     elif args.command == "test":
         await send_test(state)
     elif args.command == "run":
-        await forward_forever(state, args.input)
+        target = await asyncio.to_thread(lark.resolve_target, args.lark_contact)
+        await forward_forever(
+            state,
+            args.input,
+            lark=lark,
+            target=target,
+            contact_name=args.lark_contact,
+        )
 
 
 def main() -> None:
