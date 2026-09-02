@@ -1,6 +1,12 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR="${0:A:h}"
+if [[ -z "${LARK_QQ_STORAGE_DIR:-}" ]]; then
+  export LARK_QQ_STORAGE_DIR="$HOME/Library/Application Support/lark-qq-forwarder"
+else
+  export LARK_QQ_STORAGE_DIR="${LARK_QQ_STORAGE_DIR:A}"
+fi
+mkdir -p "$LARK_QQ_STORAGE_DIR"
 VENV_DIR="$PROJECT_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
 CONTROL_PORT="8765"

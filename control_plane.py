@@ -16,6 +16,7 @@ import hmac
 import http.server
 import json
 import logging
+import os
 import secrets
 import signal
 import subprocess
@@ -28,6 +29,7 @@ from urllib.parse import parse_qs, urlsplit
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
+STORAGE_DIR_ENV = "LARK_QQ_STORAGE_DIR"
 LOCAL_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 EVENT_LIMIT = 80
@@ -168,6 +170,7 @@ class ControlPlaneConfig:
         port: int = DEFAULT_PORT,
     ) -> "ControlPlaneConfig":
         project_dir = project_dir.resolve()
+        storage_dir = Path(os.environ.get(STORAGE_DIR_ENV, str(Path.home() / "Library/Application Support/lark-qq-forwarder"))).expanduser().resolve()
         venv_python = project_dir / ".venv" / "bin" / "python"
         python_executable = (
             venv_python if venv_python.is_file() else Path(sys.executable)
@@ -183,10 +186,10 @@ class ControlPlaneConfig:
             probe_executable=probe_executable,
             bridge_script=project_dir / "qq_bridge.py",
             replay_script=project_dir / "channel_replay.py",
-            input_path=project_dir / "lark-notifications.jsonl",
-            state_path=project_dir / ".qq-forwarder-state.json",
-            channel_state_path=project_dir / ".lark-channel-cursors.json",
-            listener_path=project_dir / LISTENER_FILE_NAME,
+            input_path=storage_dir / "lark-notifications.jsonl",
+            state_path=storage_dir / ".qq-forwarder-state.json",
+            channel_state_path=storage_dir / ".lark-channel-cursors.json",
+            listener_path=storage_dir / LISTENER_FILE_NAME,
             port=port,
         )
 

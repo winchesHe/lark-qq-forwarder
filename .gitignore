@@ -10,6 +10,7 @@ __pycache__/
 .qq-forwarder-metrics.json.lock
 .qq-forwarder.log
 .qq-forwarder.log.*
+.runtime/
 .lark-notifications.jsonl
 .lark-channel-cursors.json
 .lark-channel-cursors.json.tmp
