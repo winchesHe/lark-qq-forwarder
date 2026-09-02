@@ -430,7 +430,7 @@
     elements.channelSelect.value = selected;
     }
     if (elements.replayGroupSelect) {
-      const groups = getRuntimeGroups().filter(group => group.status === "active");
+      const groups = runtimeGroups().filter(group => group.status === "active");
       const previous = new Set(Array.from(elements.replayGroupSelect.selectedOptions).map(option => option.value));
       elements.replayGroupSelect.replaceChildren();
       groups.forEach(group => {
@@ -614,6 +614,7 @@
       elements.primeButton,
       elements.forceEndButton,
       elements.channelSelect,
+      elements.replayGroupSelect,
       elements.replayButton,
       elements.cancelReplayButton,
     ].forEach(function (button) {

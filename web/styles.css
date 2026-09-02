@@ -541,6 +541,22 @@ h2 {
   font-weight: 650;
 }
 
+.replay-form > select[multiple] {
+  min-height: 72px;
+  padding: 7px 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+
+.replay-form > select[multiple]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .replay-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
