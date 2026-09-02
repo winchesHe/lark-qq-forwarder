@@ -464,6 +464,8 @@ class ProcessSupervisor:
         self._generation = 0
         self._start_thread: Optional[threading.Thread] = None
         self._check_thread: Optional[threading.Thread] = None
+        self._code_watch_paths = (self.config.bridge_script, self.config.replay_script)
+        self._code_signature = self._code_signature_now()
         initial_runtime = _state_summary(config.state_path)
         initial_binding_state = (
             "bound" if initial_runtime.get("qq_group_bound") else "unbound"
@@ -1608,7 +1610,33 @@ class ProcessSupervisor:
     def _input_watcher(self) -> None:
         while not self._watch_stop.is_set():
             self.poll_input_events()
+            self._reload_changed_code()
             self._watch_stop.wait(0.5)
+
+    def _code_signature_now(self) -> tuple[Optional[int], ...]:
+        values: list[Optional[int]] = []
+        for path in self._code_watch_paths:
+            try:
+                values.append(path.stat().st_mtime_ns)
+            except OSError:
+                values.append(None)
+        return tuple(values)
+
+    def _reload_changed_code(self) -> None:
+        signature = self._code_signature_now()
+        if signature == self._code_signature:
+            return
+        self._code_signature = signature
+        with self._lock:
+            running = bool(self._active_public_records_locked())
+        if not running:
+            return
+        try:
+            with self._lock:
+                self._record_event_locked("code_reload_requested", "检测到转发代码变化，准备自动重载")
+            self.restart()
+        except ControlPlaneError as exc:
+            logging.warning("代码自动重载未完成：%s", exc)
 
     def close(self) -> None:
         self._watch_stop.set()
