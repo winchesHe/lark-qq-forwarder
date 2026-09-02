@@ -1190,7 +1190,7 @@ async def bind_group(
 
 async def send_test(state: StateStore, binding_id: Optional[str] = None) -> None:
     if binding_id:
-        group_openids = [group["group_openid"] for group in state.group_bindings if group.get("binding_id") == binding_id and group.get("status") == "active"]
+        group_openids = [group["group_openid"] for group in state.group_bindings if group.get("binding_id") == binding_id and group.get("status") != "disabled"]
         if not group_openids:
             raise BridgeError("指定 QQ 群不存在或当前不是活跃状态")
     else:

@@ -356,7 +356,7 @@
       const groups = runtimeGroups();
       const previous = elements.testGroupSelect.value;
       elements.testGroupSelect.replaceChildren();
-      groups.filter(group => group.status === "active").forEach(function (group, index) {
+      groups.filter(group => group.status !== "disabled").forEach(function (group, index) {
         const option = makeElement("option", "", group.label || `QQ 群 ${index + 1}`);
         option.value = group.binding_id || "";
         elements.testGroupSelect.appendChild(option);
