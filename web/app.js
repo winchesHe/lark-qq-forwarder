@@ -27,6 +27,7 @@
     bindingTitle: document.querySelector("#binding-title-copy"),
     bindingDetail: document.querySelector("#binding-detail"),
     bindButton: document.querySelector("#bind-button"),
+    addBindButton: document.querySelector("#add-bind-button"),
     rebindButton: document.querySelector("#rebind-button"),
     cancelBindButton: document.querySelector("#cancel-bind-button"),
     testBadge: document.querySelector("#test-badge"),
@@ -45,6 +46,20 @@
     replayButton: document.querySelector("#replay-button"),
     cancelReplayButton: document.querySelector("#cancel-replay-button"),
     replaySummary: document.querySelector("#replay-summary"),
+    messageIds: document.querySelector("#message-ids"),
+    previewReplayButton: document.querySelector("#preview-replay-button"),
+    replayItems: document.querySelector("#replay-items"),
+    replayDialog: document.querySelector("#replay-dialog"),
+    replayDialogList: document.querySelector("#replay-dialog-list"),
+    replayDialogSummary: document.querySelector("#replay-dialog-summary"),
+    replayDialogClose: document.querySelector("#replay-dialog-close"),
+    replayDialogSelectAll: document.querySelector("#replay-dialog-select-all"),
+    replayDialogConfirm: document.querySelector("#replay-dialog-confirm"),
+    listenerList: document.querySelector("#listener-list"),
+    listenerName: document.querySelector("#listener-name"),
+    listenerAddButton: document.querySelector("#listener-add-button"),
+    listenerFeedback: document.querySelector("#listener-feedback"),
+    listenerChannelList: document.querySelector("#listener-channel-list"),
   };
 
   const stateLabels = {
@@ -106,6 +121,7 @@
     replay_failed: "补发失败",
     replay_cancel_requested: "取消补发",
     replay_cancelled: "补发取消",
+    listener_added: "监听人员",
   };
 
   function setText(node, value) {
@@ -224,7 +240,8 @@
     const check = data.check || {};
     const channelCount = Number(runtime.channel_forwarding_count) || 0;
     elements.runtimeList.replaceChildren();
-    elements.runtimeList.appendChild(makeRuntimeRow("QQ 群绑定", yesNo(runtime.qq_group_bound, "已绑定", "未绑定"), Boolean(runtime.qq_group_bound)));
+    const qqCount = Number(runtime.qq_group_count) || (runtime.qq_group_bound ? 1 : 0);
+    elements.runtimeList.appendChild(makeRuntimeRow("QQ 群绑定", qqCount ? `${qqCount} 个已绑定` : "未绑定", qqCount > 0));
     elements.runtimeList.appendChild(makeRuntimeRow("飞书会话游标", yesNo(runtime.message_cursor_initialized, "已就绪", "需先 prime"), Boolean(runtime.message_cursor_initialized)));
     elements.runtimeList.appendChild(makeRuntimeRow("频道自动转发", channelCount ? `${channelCount} 个已配置` : "未配置", Boolean(runtime.channel_forwarding_available)));
     elements.runtimeList.appendChild(makeRuntimeRow("本地通知记录", yesNo(runtime.notification_log_available, "可读取", "尚未生成"), Boolean(runtime.notification_log_available)));
@@ -256,17 +273,19 @@
     const state = renderOperationBadge(elements.bindingBadge, operation, fallbackState, bindingLabels);
     let title = state === "bound" ? "目标 QQ 群已绑定" : "尚未绑定 QQ 群";
     let detail = "开始绑定后，在目标 QQ 群发送 @qclaw 绑定测试。";
+    const blocked = serviceMustBeStopped(overallState);
+    const busyState = state === "binding" || state === "cancelling";
     if (state === "binding") detail = "请在目标 QQ 群发送 @qclaw 绑定测试，绑定完成后会自动更新。";
     if (state === "cancelling") detail = "正在取消绑定，当前已有绑定不会被替换。";
-    if (state === "bound") detail = "已保存绑定状态；重新绑定需要明确二次确认。";
+    if (state === "bound") detail = `已保存 ${runtime.qq_group_count || 1} 个 QQ 群绑定；重新绑定会替换当前群，新增绑定会保留现有群。`;
+    if (blocked && !busyState) detail = "请先停止转发服务，再新增或重新绑定 QQ 群。";
     if (operation.failure_message) detail = operation.failure_message;
     setText(elements.bindingTitle, title);
     setText(elements.bindingDetail, detail);
 
-    const busyState = state === "binding" || state === "cancelling";
-    const blocked = serviceMustBeStopped(overallState);
     elements.bindButton.disabled = busy || busyState || blocked || state === "bound";
     elements.rebindButton.disabled = busy || busyState || blocked || state !== "bound";
+    if (elements.addBindButton) elements.addBindButton.disabled = busy || busyState || blocked;
     elements.cancelBindButton.hidden = !busyState;
     elements.cancelBindButton.disabled = busy || state === "cancelling";
   }
@@ -389,14 +408,30 @@
     const unavailable = readyChannels.length === 0;
     elements.channelSelect.disabled = busy || serviceBlocked || operationBusy || unavailable;
     elements.replayButton.disabled = busy || serviceBlocked || operationBusy || unavailable;
+    if (elements.previewReplayButton) elements.previewReplayButton.disabled = busy || serviceBlocked || operationBusy || unavailable;
     elements.cancelReplayButton.hidden = !operationBusy;
     elements.cancelReplayButton.disabled = busy || state === "cancelling";
 
     const baseline = formatBaseline(replay.baseline_at);
+    const progress = window.__lastState && window.__lastState.replay_progress;
+    const progressText = progress && progress.channel === (elements.channelSelect.value || "")
+      ? `当前进度：${progress.current || 0}/${progress.total || 0}，已发送 ${progress.forwarded || 0}，已跳过 ${progress.skipped || 0}`
+      : "";
+    if (elements.replayDialog && elements.replayDialog.open && progress && progress.channel === elements.channelSelect.value) {
+      const processed = new Set(progress.processed_ids || []);
+      elements.replayDialogList.querySelectorAll(".replay-item").forEach(function (row) {
+        const done = processed.has(row.dataset.messageId);
+        row.classList.toggle("is-done", done);
+        const checkbox = row.querySelector("input");
+        if (checkbox && done) checkbox.checked = false;
+        if (checkbox) checkbox.disabled = done;
+      });
+      setText(elements.replayDialogSummary, `处理进度：${progress.current || 0}/${progress.total || 0}，已发送 ${progress.forwarded || 0}，已跳过 ${progress.skipped || 0}`);
+    }
     setText(
       elements.replaySummary,
       replay.available && readyChannels.length
-        ? `已配置 ${readyChannels.length} 个频道，自动转发和手动补发都从各自游标继续；初始基准为 ${baseline}。`
+        ? `已配置 ${readyChannels.length} 个频道；初始基准为 ${baseline}。${progressText}`
         : "暂无可用的频道游标，请先建立频道游标。",
     );
   }
@@ -437,6 +472,7 @@
   }
 
   function render(data) {
+    window.__lastState = data;
     const operations = operationsFrom(data);
     const runtime = data.runtime || {};
     const overallState = (data.overall || {}).state || "stopped";
@@ -449,6 +485,25 @@
     renderRuntime(data);
     renderRecovery(data);
     renderEvents(data.events);
+    if (elements.listenerList) {
+      elements.listenerList.replaceChildren();
+      (Array.isArray(data.listeners) ? data.listeners : ["Perfecto"]).forEach(function (name) {
+        elements.listenerList.appendChild(makeElement("span", "listener-chip", name));
+      });
+    }
+    if (elements.listenerChannelList) {
+      elements.listenerChannelList.replaceChildren();
+      const channels = data.channel_replay && Array.isArray(data.channel_replay.channels)
+        ? data.channel_replay.channels : [];
+      if (!channels.length) {
+        elements.listenerChannelList.appendChild(makeElement("span", "panel-footnote", "暂无已配置监听频道"));
+      } else {
+        channels.forEach(function (channel) {
+          const label = channel.state === "ready" ? `${channel.name} · 监听中` : `${channel.name} · ${channel.label || "未就绪"}`;
+          elements.listenerChannelList.appendChild(makeElement("span", `listener-chip ${channel.state === "ready" ? "is-channel-active" : "is-channel-disabled"}`, label));
+        });
+      }
+    }
     setText(elements.sessionTime, `最后更新 ${formatTime(new Date().toISOString())}`);
     showError("");
   }
@@ -536,13 +591,105 @@
     elements.recoveryCheckButton.addEventListener("click", function () { runAction("/api/actions/check", "检查权限与连接"); });
     elements.recoveryRestartButton.addEventListener("click", function () { runAction("/api/actions/restart", "重启"); });
     elements.bindButton.addEventListener("click", function () { runAction("/api/actions/bind", "绑定"); });
+    if (elements.addBindButton) elements.addBindButton.addEventListener("click", function () {
+      runAction("/api/actions/bind", "新增群绑定", { add: true });
+    });
     elements.cancelBindButton.addEventListener("click", function () { runAction("/api/actions/bind/cancel", "取消绑定"); });
+    if (elements.listenerAddButton) elements.listenerAddButton.addEventListener("click", async function () {
+      const name = (elements.listenerName.value || "").trim();
+      if (!name) { setText(elements.listenerFeedback, "请输入飞书联系人名称。"); return; }
+      elements.listenerAddButton.disabled = true;
+      try {
+        const result = await fetchJson("/api/listeners", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+        elements.listenerName.value = "";
+        setText(elements.listenerFeedback, `已新增“${name}”，正在自动热更新转发任务…`);
+        if (elements.listenerList) {
+          elements.listenerList.replaceChildren();
+          result.listeners.forEach(value => elements.listenerList.appendChild(makeElement("span", "listener-chip", value)));
+        }
+        try {
+          await fetchJson("/api/actions/restart", {
+            method: "POST",
+            headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          setText(elements.listenerFeedback, `已新增“${name}”，转发任务已自动热更新。`);
+        } catch (reloadError) {
+          setText(elements.listenerFeedback, `已新增“${name}”，但自动热更新失败：${reloadError.message || "请稍后重试"}`);
+        }
+      } catch (error) { setText(elements.listenerFeedback, error.message || "新增监听失败。"); }
+      finally { elements.listenerAddButton.disabled = false; }
+    });
     elements.replayButton.addEventListener("click", function () {
       const channel = elements.channelSelect.value;
       if (!channel) return;
-      if (window.confirm(`将把“${channel}”游标之后的消息补发到当前 QQ 群，消息会真实发送。确定继续吗？`)) {
-        runAction("/api/actions/replay", "频道补发", { channel: channel });
+      const rawIds = elements.messageIds ? elements.messageIds.value : "";
+      const messageIds = rawIds.split(/[，,\s]+/).map(value => value.trim()).filter(Boolean);
+      if (window.confirm(`将把“${channel}”${messageIds.length ? `选中的 ${messageIds.length} 条消息` : "全部待补发消息"}补发到当前 QQ 群，消息会真实发送。确定继续吗？`)) {
+        runAction("/api/actions/replay", "频道补发", { channel: channel, message_ids: messageIds });
       }
+    });
+    if (elements.previewReplayButton) elements.previewReplayButton.addEventListener("click", async function () {
+      const channel = elements.channelSelect.value;
+      if (!channel) return;
+      if (elements.replayDialog.showModal && !elements.replayDialog.open) elements.replayDialog.showModal();
+      elements.replayDialogList.replaceChildren(makeElement("div", "empty-state", "正在读取待补发消息…"));
+      setText(elements.replayDialogSummary, `正在读取“${channel}”的待补发清单，请稍候。`);
+      elements.replayDialogSelectAll.disabled = true;
+      elements.replayDialogConfirm.disabled = true;
+      setText(elements.replayDialogSelectAll, "全选");
+      try {
+        const result = await fetchJson(`/api/replay/preview?channel=${encodeURIComponent(channel)}`);
+        const items = result.items || [];
+        window.__replayPreviewItems = items;
+        elements.replayDialogList.replaceChildren();
+        items.forEach(function (item) {
+          const row = makeElement("label", "replay-item");
+          row.dataset.messageId = item.message_id;
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = item.message_id;
+          checkbox.checked = true;
+          row.appendChild(checkbox);
+          const main = makeElement("div", "replay-item-main");
+          main.appendChild(makeElement("div", "replay-item-meta", `${item.position} · ${item.type === "image" ? "图片" : "文本"} · ${item.message_id}`));
+          if (item.type === "image") {
+            main.appendChild(makeElement("span", "replay-item-image", item.image_key ? `图片资源：${item.image_key}` : "图片消息（缺少资源键）"));
+          } else {
+            main.appendChild(makeElement("div", "replay-item-content", item.content || item.preview || "（空文本）"));
+          }
+          row.appendChild(main);
+          elements.replayDialogList.appendChild(row);
+        });
+        setText(elements.replayDialogSummary, items.length ? `共 ${items.length} 条待补发，勾选后点击“使用选中消息”。` : "当前没有待补发消息。");
+        elements.replayDialogSelectAll.disabled = items.length === 0;
+        elements.replayDialogConfirm.disabled = items.length === 0;
+        if (elements.replayDialogSelectAll) setText(elements.replayDialogSelectAll, "全不选");
+      } catch (error) {
+        elements.replayDialogList.replaceChildren(makeElement("div", "empty-state", error.message || "无法读取待补发消息。"));
+        setText(elements.replayDialogSummary, "读取失败，请关闭弹窗后重试。");
+      }
+    });
+    if (elements.replayDialogClose) elements.replayDialogClose.addEventListener("click", function () { elements.replayDialog.close(); });
+    if (elements.replayDialogSelectAll) elements.replayDialogSelectAll.addEventListener("click", function () {
+      const inputs = Array.from(elements.replayDialogList.querySelectorAll("input:not(:disabled)"));
+      const shouldClear = inputs.length > 0 && inputs.every(input => input.checked);
+      inputs.forEach(input => { input.checked = !shouldClear; });
+      setText(elements.replayDialogSelectAll, shouldClear ? "全选" : "全不选");
+    });
+    if (elements.replayDialogList) elements.replayDialogList.addEventListener("change", function () {
+      const inputs = Array.from(elements.replayDialogList.querySelectorAll("input:not(:disabled)"));
+      setText(elements.replayDialogSelectAll, inputs.length && inputs.every(input => input.checked) ? "全不选" : "全选");
+    });
+    if (elements.replayDialogConfirm) elements.replayDialogConfirm.addEventListener("click", function () {
+      const ids = Array.from(elements.replayDialogList.querySelectorAll("input:checked")).map(input => input.value);
+      if (!ids.length) {
+        setText(elements.replayDialogSummary, "请至少选择一条消息；如需全部补发，请关闭弹窗后直接点击补发。" );
+        return;
+      }
+      elements.messageIds.value = ids.join("\n");
+      setText(elements.replayItems, ids.length ? `已选择 ${ids.length} 条消息，点击“补发选中频道”开始。` : "未选择消息，将不会补发。");
+      elements.replayDialog.close();
     });
     elements.cancelReplayButton.addEventListener("click", function () {
       runAction("/api/actions/replay/cancel", "取消补发");

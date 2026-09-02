@@ -64,8 +64,8 @@
           <section class="panel operation-panel" aria-labelledby="binding-title">
             <div class="panel-heading compact-heading">
               <div>
-                <p class="eyebrow">QQ 群</p>
-                <h2 id="binding-title">绑定</h2>
+                <p class="eyebrow">监听管理</p>
+                <h2 id="binding-title">监听人员与 QQ 群</h2>
               </div>
               <span id="binding-badge" class="status-badge is-loading">读取中</span>
             </div>
@@ -75,8 +75,20 @@
             </div>
             <div class="operation-actions">
               <button id="bind-button" class="button button-primary" type="button">开始绑定</button>
+              <button id="add-bind-button" class="button button-secondary" type="button">新增群绑定</button>
               <button id="rebind-button" class="button button-secondary" type="button">重新绑定</button>
               <button id="cancel-bind-button" class="button button-secondary" type="button" hidden>取消绑定</button>
+            </div>
+            <div class="listener-inline">
+              <div class="listener-inline-heading"><span class="eyebrow">飞书监听人员</span><span class="panel-footnote">保存后自动热更新</span></div>
+              <div id="listener-list" class="listener-list"></div>
+              <div class="listener-add-row">
+                <input id="listener-name" type="text" maxlength="80" placeholder="输入飞书联系人名称" />
+                <button id="listener-add-button" class="button button-secondary" type="button">新增监听</button>
+              </div>
+              <p id="listener-feedback" class="panel-footnote" role="status" aria-live="polite"></p>
+              <div class="listener-inline-heading listener-channel-heading"><span class="eyebrow">当前监听群频道</span><span class="panel-footnote">自动转发状态</span></div>
+              <div id="listener-channel-list" class="listener-list"></div>
             </div>
           </section>
 
@@ -137,8 +149,12 @@
                   <option value="">正在读取频道</option>
                 </select>
                 <button id="replay-button" class="button button-primary" type="button" disabled>补发选中频道</button>
+                <button id="preview-replay-button" class="button button-secondary" type="button" disabled>查看待补发</button>
                 <button id="cancel-replay-button" class="button button-secondary" type="button" hidden>取消补发</button>
               </div>
+              <label for="message-ids">指定消息 ID（可选，逗号或换行分隔；留空表示全部待补发）</label>
+              <textarea id="message-ids" rows="3" placeholder="message-id-1\nmessage-id-2"></textarea>
+              <div id="replay-items" class="panel-footnote">选择频道后可查看待补发消息。</div>
             </div>
           </div>
           <p id="replay-summary" class="panel-footnote">频道自动转发状态正在读取。</p>
@@ -209,6 +225,19 @@
 
         <p id="global-error" class="global-error" role="alert" hidden></p>
       </main>
+
+      <dialog id="replay-dialog" class="replay-dialog" aria-labelledby="replay-dialog-title">
+        <div class="replay-dialog-head">
+          <div><p class="eyebrow">待补发清单</p><h2 id="replay-dialog-title">选择要补发的消息</h2></div>
+          <button id="replay-dialog-close" class="text-button" type="button">关闭</button>
+        </div>
+        <p id="replay-dialog-summary" class="panel-footnote"></p>
+        <div id="replay-dialog-list" class="replay-dialog-list"></div>
+        <div class="replay-dialog-actions">
+          <button id="replay-dialog-select-all" class="button button-secondary" type="button">全选</button>
+          <button id="replay-dialog-confirm" class="button button-primary" type="button">使用选中消息</button>
+        </div>
+      </dialog>
 
       <footer class="footer">
         <span>本机工具 · 不开放局域网访问</span>
