@@ -8,6 +8,8 @@ __pycache__/
 .qq-forwarder.lock
 .qq-forwarder-metrics.json
 .qq-forwarder-metrics.json.lock
+.qq-forwarder.log
+.qq-forwarder.log.*
 .lark-notifications.jsonl
 .lark-channel-cursors.json
 .lark-channel-cursors.json.tmp

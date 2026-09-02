@@ -8,6 +8,7 @@ from datetime import datetime
 import fcntl
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import shutil
@@ -46,6 +47,7 @@ DEFAULT_LISTENERS = PROJECT_DIR / ".lark-listeners.json"
 DEFAULT_LISTENER_CURSORS = PROJECT_DIR / ".lark-listener-cursors.json"
 DEFAULT_PROCESS_LOCK = PROJECT_DIR / ".qq-forwarder.lock"
 DEFAULT_METRICS = PROJECT_DIR / ".qq-forwarder-metrics.json"
+DEFAULT_LOG = PROJECT_DIR / ".qq-forwarder.log"
 STATE_SCHEMA_VERSION = 3
 IMAGE_KEY_PATTERN = re.compile(r"\b(img_[A-Za-z0-9_-]{10,})\b")
 LARK_COMMAND_TIMEOUT_SECONDS = 30.0
@@ -53,6 +55,7 @@ QQ_REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_SEND_ATTEMPTS = 3
 SOURCE_QUEUE_SIZE = 4
 DEFAULT_POLL_INTERVAL = 0.1
+LOGGER = logging.getLogger("lark_qq_forwarder")
 
 
 class BridgeError(RuntimeError):
@@ -777,6 +780,8 @@ class LarkClient:
         self.binary = binary or shutil.which("lark-cli") or "lark-cli"
 
     def _run(self, arguments: list[str], *, cwd: Optional[Path] = None) -> Any:
+        started = time.perf_counter()
+        operation = " ".join(arguments[:2])
         try:
             result = subprocess.run(
                 [self.binary, *arguments, "--profile", self.profile],
@@ -787,19 +792,24 @@ class LarkClient:
                 timeout=LARK_COMMAND_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:
+            LOGGER.error("飞书 CLI 超时 operation=%s elapsed_ms=%.1f", operation, (time.perf_counter() - started) * 1000)
             raise BridgeError("飞书 CLI 请求超时") from exc
         except OSError as exc:
+            LOGGER.error("飞书 CLI 启动失败 operation=%s elapsed_ms=%.1f error=%s", operation, (time.perf_counter() - started) * 1000, type(exc).__name__)
             raise BridgeError("无法启动 lark-cli") from exc
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
+            LOGGER.error("飞书 CLI 返回无效 JSON operation=%s elapsed_ms=%.1f", operation, (time.perf_counter() - started) * 1000)
             raise BridgeError("lark-cli 未返回有效 JSON") from exc
         if not isinstance(payload, dict):
             raise BridgeError("lark-cli 返回了不支持的 JSON 结构")
         if result.returncode != 0 or payload.get("ok") is False:
             error = payload.get("error")
             message = error.get("message") if isinstance(error, dict) else None
+            LOGGER.error("飞书 CLI 失败 operation=%s elapsed_ms=%.1f error=%s", operation, (time.perf_counter() - started) * 1000, type(error).__name__ if error else "unknown")
             raise BridgeError(f"飞书 API 调用失败：{message or '未知错误'}")
+        LOGGER.info("飞书 CLI 完成 operation=%s elapsed_ms=%.1f", operation, (time.perf_counter() - started) * 1000)
         return payload
 
     def resolve_target(self, contact_name: str) -> LarkTarget:
@@ -968,9 +978,13 @@ async def _retry_send(action: Callable[[], Any], *, description: str) -> Any:
     """对网络型发送做有限重试，避免瞬时故障直接拖垮整个转发进程。"""
     delay = 0.5
     for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
+        started = time.perf_counter()
         try:
-            return await action()
-        except BridgeError:
+            result = await action()
+            LOGGER.info("QQ 操作成功 operation=%s attempt=%d elapsed_ms=%.1f", description, attempt, (time.perf_counter() - started) * 1000)
+            return result
+        except BridgeError as exc:
+            LOGGER.warning("QQ 操作失败 operation=%s attempt=%d elapsed_ms=%.1f error=%s", description, attempt, (time.perf_counter() - started) * 1000, type(exc).__name__)
             if attempt >= MAX_SEND_ATTEMPTS:
                 raise
             logging.warning(
@@ -1165,10 +1179,16 @@ async def process_source_pending_messages(
     if not group_openids:
         raise BridgeError("没有可用的 QQ 群绑定")
     list_since = getattr(lark, "list_messages_since", None)
-    if callable(list_since):
-        messages = await asyncio.to_thread(list_since, source_chat_id, cursor)
-    else:
-        messages = await asyncio.to_thread(lark.list_messages, source_chat_id)
+    fetch_started = time.perf_counter()
+    try:
+        if callable(list_since):
+            messages = await asyncio.to_thread(list_since, source_chat_id, cursor)
+        else:
+            messages = await asyncio.to_thread(lark.list_messages, source_chat_id)
+        LOGGER.info("来源读取完成 source=%s message_count=%d elapsed_ms=%.1f", source_name, len(messages), (time.perf_counter() - fetch_started) * 1000)
+    except BridgeError as exc:
+        LOGGER.error("来源读取失败 source=%s elapsed_ms=%.1f error=%s", source_name, (time.perf_counter() - fetch_started) * 1000, type(exc).__name__)
+        raise
     pending = pending_messages(messages, cursor)
     forwarded = 0
 
@@ -1577,10 +1597,15 @@ async def async_main() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    file_handler = RotatingFileHandler(
+        DEFAULT_LOG, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
+    file_handler.setFormatter(logging.Formatter(log_format))
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(logging.Formatter(log_format))
+    logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
+    LOGGER.info("转发进程启动 log_path=%s", DEFAULT_LOG)
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
