@@ -813,13 +813,21 @@ def extract_post_text(content: str) -> str:
     try:
         value: Any = json.loads(content)
     except (TypeError, json.JSONDecodeError):
-        return content.strip()
+        text = content.strip()
+        text = re.sub(r"!\[[^\]]*\]\(\s*img_[^)]+\s*\)", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\[图片\]\s*img_[\w-]+", "", text, flags=re.IGNORECASE)
+        return "\n".join(line.strip() for line in text.splitlines() if line.strip())
     texts: list[str] = []
     for item in _walk_objects(value):
         text = item.get("text")
         if isinstance(text, str) and text.strip():
             texts.append(text.strip())
-    return "\n".join(dict.fromkeys(texts))
+    text = "\n".join(dict.fromkeys(texts))
+    # 飞书富文本有时会把图片节点序列化成 Markdown 占位符；图片会单独上传，
+    # 正文中不应再显示这段资源键。
+    text = re.sub(r"!\[[^\]]*\]\(\s*img_[^)]+\s*\)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[图片\]\s*img_[\w-]+", "", text, flags=re.IGNORECASE)
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
 class LarkClient:

@@ -255,6 +255,10 @@ class LarkMessageTests(unittest.TestCase):
         content = json.dumps({"zh_cn": {"content": [[{"tag": "text", "text": "公告"}, {"tag": "img", "image_key": "img_v3_abcdef1234567890"}, {"tag": "img", "image_key": "img_v3_1234567890abcdef"}]]}}, ensure_ascii=False)
         self.assertEqual(extract_post_text(content), "公告")
         self.assertEqual(extract_image_keys(content), ["img_v3_abcdef1234567890", "img_v3_1234567890abcdef"])
+        self.assertEqual(
+            extract_post_text("![Image](img_v3_abcdef1234567890)\n正文"),
+            "正文",
+        )
 
     def test_formats_authoritative_text(self) -> None:
         formatted = format_lark_text("Perfecto", "后台文本\n")
