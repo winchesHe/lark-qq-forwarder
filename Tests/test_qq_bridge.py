@@ -384,7 +384,8 @@ class ForwardingTests(unittest.IsolatedAsyncioTestCase):
                         channel_state_path=channel_state_path,
                     )
 
-            self.assertEqual(lark.requested_chat_ids, chat_ids)
+            # 启动时先统一补扫频道，随后再消费通知唤醒；游标与投递记录保证不会重复发送。
+            self.assertEqual(lark.requested_chat_ids, chat_ids + chat_ids)
             self.assertEqual(sender.await_count, 4)
             sent_texts = [call.args[2] for call in sender.await_args_list]
             for name in channel_names:

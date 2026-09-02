@@ -1419,6 +1419,27 @@ async def _forward_forever_impl(
                 mark_delivery=lambda group, message_id, listener=name: state.mark_delivery(listener, group, message_id),
             )
 
+        # 监听人员和监听频道都属于监听源：重启后统一立即补扫各自游标之后的消息。
+        for channel_name in channel_cursors.names():
+            try:
+                pending_count, forwarded_count = await process_channel_pending_messages(
+                    state=state,
+                    cursors=channel_cursors,
+                    channel_name=channel_name,
+                    lark=lark,
+                    api=api,
+                    http_client=http_client,
+                    group_openid=group_openids,
+                )
+                LOGGER.info(
+                    "启动补扫完成 source=%s pending=%d forwarded=%d",
+                    channel_name,
+                    pending_count,
+                    forwarded_count,
+                )
+            except BridgeError as exc:
+                LOGGER.error("启动补扫失败 source=%s error=%s", channel_name, type(exc).__name__)
+
         source_semaphore = asyncio.Semaphore(4)
 
         async def sync_perfecto() -> None:
