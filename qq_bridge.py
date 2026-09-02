@@ -1224,7 +1224,7 @@ async def send_test(state: StateStore, binding_id: Optional[str] = None) -> None
     try:
         for group_openid in group_openids:
             try:
-                await send_group_text(api, group_openid, "QQ 主动消息测试成功。下一条 Perfecto 飞书消息将由本机自动转发。")
+                await send_group_text(api, group_openid, "QQ 主动消息测试成功。后续已配置监听源的新飞书消息将由本机自动转发。")
             except BridgeError as exc:
                 state.mark_group_verified(group_openid, ok=False, error=str(exc))
                 raise

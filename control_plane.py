@@ -1025,7 +1025,7 @@ class ProcessSupervisor:
                     self._finish_operation_locked(
                         OP_TEST,
                         "succeeded",
-                        effect="测试消息已发送到已绑定 QQ 群",
+                        effect="测试消息已发送到已选择的 QQ 群；后续已配置监听源的新消息将由本机自动转发",
                     )
                     self._record_event_locked("test_succeeded", "QQ 主动消息测试成功")
                 else:

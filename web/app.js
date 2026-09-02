@@ -191,7 +191,7 @@
     setText(elements.overallLabel, label);
 
     let detail = "两个本地进程都未运行。";
-    if (state === "running") detail = "通知监听、Perfecto 和四个频道转发都在运行。";
+    if (state === "running") detail = "通知监听和已配置的飞书来源转发都在运行。";
     if (state === "starting") detail = "正在准备游标并启动本地进程。";
     if (state === "stopping") detail = "正在停止由本控制面启动的进程。";
     if (state === "degraded") detail = overall.failure_message || "只有部分进程在运行，请检查子进程状态。";
@@ -343,7 +343,7 @@
     }
     if (state === "succeeded") {
       title = "主动消息测试成功";
-      detail = operation.effect || "测试消息已发送到已绑定 QQ 群。";
+      detail = operation.effect || "测试消息已发送到已选择的 QQ 群。后续已配置监听源的新消息将由本机自动转发。";
     }
     if (state === "failed") {
       title = "主动消息测试失败";
@@ -648,7 +648,7 @@
 
   function bindActions() {
     elements.startButton.addEventListener("click", function () {
-      if (window.confirm("启动后会自动转发 Perfecto 和四个频道；各频道会从当前游标继续，尚未补发的历史消息也可能被发送。确定启动吗？")) {
+      if (window.confirm("启动后会自动监听并转发所有已配置的飞书来源；各来源会从当前游标继续，尚未补发的历史消息也可能被发送。确定启动吗？")) {
         runAction("/api/actions/start", "启动");
       }
     });
