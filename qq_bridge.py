@@ -1281,7 +1281,26 @@ async def process_source_pending_messages(
             continue
 
         # 图片只需从飞书下载一次；QQ 的 file_info 仍按目标群分别上传。
-        if message.msg_type in {"image", "post"}:
+        if message.msg_type == "post":
+            image_keys = extract_image_keys(message.content)
+            post_text = extract_post_text(message.content)
+            with tempfile.TemporaryDirectory(prefix="lark-qq-post-") as directory:
+                image_paths = [await asyncio.to_thread(lark.download_image, message_id=message.message_id, image_key=image_key, output_directory=Path(directory)) for image_key in image_keys]
+                for target_group in group_openids:
+                    if has_delivery and has_delivery(target_group, message.message_id):
+                        continue
+                    if post_text:
+                        await send_group_text(api, target_group, format_lark_text(source_name, post_text))
+                        forwarded += 1
+                    for image_path in image_paths:
+                        await send_group_image(api, http_client, target_group, image_path)
+                        forwarded += 1
+                    if mark_delivery:
+                        mark_delivery(target_group, message.message_id)
+            advance(message)
+            continue
+
+        if message.msg_type == "image":
             image_keys = extract_image_keys(message.content)
             if not image_keys and message.msg_type == "image":
                 raise BridgeError("飞书图片消息缺少 image_key")
