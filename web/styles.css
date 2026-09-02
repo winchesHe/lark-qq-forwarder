@@ -480,6 +480,16 @@ h2 {
   min-width: 0;
 }
 
+.listener-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }
+.listener-inline { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); }
+.listener-channel-heading { margin-top: 18px; }
+.listener-inline-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.listener-chip { padding: 6px 10px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; font-size: 12px; }
+.listener-chip.is-channel-active { color: var(--ok); background: var(--ok-soft); border-color: #b9dfd3; }
+.listener-chip.is-channel-disabled { color: var(--muted); background: var(--surface); }
+.listener-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 14px; }
+.listener-add-row input { min-width: 0; padding: 9px 11px; color: var(--ink); background: var(--surface-strong); border: 1px solid var(--line-strong); border-radius: 8px; font: inherit; font-size: 12px; }
+
 .button-caution {
   color: var(--danger);
   background: transparent;
@@ -544,6 +554,28 @@ h2 {
 .replay-controls .button {
   white-space: nowrap;
 }
+
+.replay-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 48px));
+  padding: 24px;
+  color: var(--ink);
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(22, 35, 48, .2);
+}
+.replay-dialog::backdrop { background: rgba(20, 31, 42, .42); }
+.replay-dialog-head, .replay-dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.replay-dialog-head h2 { margin: 2px 0 0; font-size: 22px; }
+.replay-dialog-list { display: grid; gap: 8px; max-height: 470px; overflow: auto; margin: 16px 0; }
+.replay-item { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.replay-item.is-done { opacity: .58; }
+.replay-item input { margin-top: 4px; }
+.replay-item-main { min-width: 0; }
+.replay-item-meta { color: var(--muted); font-size: 11px; }
+.replay-item-content { margin-top: 4px; color: var(--ink); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.replay-item-image { display: inline-block; margin-top: 5px; padding: 3px 7px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; font-size: 11px; }
 
 .warning-note {
   display: flex;
