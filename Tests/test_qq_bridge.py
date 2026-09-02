@@ -14,6 +14,8 @@ from qq_bridge import (
     LarkTarget,
     StateStore,
     extract_image_key,
+    extract_image_keys,
+    extract_post_text,
     extract_lark_messages,
     format_lark_text,
     forward_forever,
@@ -248,6 +250,11 @@ class LarkMessageTests(unittest.TestCase):
             "img_v3_abcdef1234567890",
         )
         self.assertIsNone(extract_image_key("[图片] 无资源键"))
+
+    def test_extracts_post_text_and_all_image_keys(self) -> None:
+        content = json.dumps({"zh_cn": {"content": [[{"tag": "text", "text": "公告"}, {"tag": "img", "image_key": "img_v3_abcdef1234567890"}, {"tag": "img", "image_key": "img_v3_1234567890abcdef"}]]}}, ensure_ascii=False)
+        self.assertEqual(extract_post_text(content), "公告")
+        self.assertEqual(extract_image_keys(content), ["img_v3_abcdef1234567890", "img_v3_1234567890abcdef"])
 
     def test_formats_authoritative_text(self) -> None:
         formatted = format_lark_text("Perfecto", "后台文本\n")

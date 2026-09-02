@@ -22,6 +22,8 @@ from qq_bridge import (
     StateStore,
     create_api,
     extract_image_key,
+    extract_image_keys,
+    extract_post_text,
     format_lark_text,
     pending_messages,
     send_group_image,
@@ -126,24 +128,26 @@ async def _replay_channel_impl(
                             forwarded += 1
                 else:
                     skipped += 1
-            elif message.msg_type == "image":
-                image_key = extract_image_key(message.content)
-                if not image_key:
+            elif message.msg_type in {"image", "post"}:
+                image_keys = extract_image_keys(message.content)
+                if not image_keys and message.msg_type == "image":
                     raise BridgeError("飞书图片消息缺少 image_key")
+                post_text = extract_post_text(message.content) if message.msg_type == "post" else ""
+                if post_text:
+                    for group_openid in group_openids:
+                        if not qq_state.has_delivery(channel.name, group_openid, message.message_id):
+                            await send_group_text(api, group_openid, format_lark_text(channel.name, post_text))
+                            forwarded += 1
                 with tempfile.TemporaryDirectory(
                     prefix="lark-qq-channel-image-"
                 ) as directory:
-                    image_path = await asyncio.to_thread(
-                        lark.download_image,
-                        message_id=message.message_id,
-                        image_key=image_key,
-                        output_directory=Path(directory),
-                    )
-                    for group_openid in group_openids:
-                        if not qq_state.has_delivery(channel.name, group_openid, message.message_id):
-                            await send_group_image(api, http_client, group_openid, image_path)
-                            qq_state.mark_delivery(channel.name, group_openid, message.message_id)
-                            forwarded += 1
+                    for image_key in image_keys:
+                        image_path = await asyncio.to_thread(lark.download_image, message_id=message.message_id, image_key=image_key, output_directory=Path(directory))
+                        for group_openid in group_openids:
+                            if not qq_state.has_delivery(channel.name, group_openid, message.message_id):
+                                await send_group_image(api, http_client, group_openid, image_path)
+                                qq_state.mark_delivery(channel.name, group_openid, message.message_id)
+                                forwarded += 1
             else:
                 logging.info("跳过暂不支持的飞书消息类型：%s", message.msg_type)
                 skipped += 1

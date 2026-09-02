@@ -799,6 +799,25 @@ def extract_image_key(content: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def extract_image_keys(content: str) -> list[str]:
+    """提取普通图片和 post 富文本中的全部图片资源键。"""
+    return list(dict.fromkeys(IMAGE_KEY_PATTERN.findall(content)))
+
+
+def extract_post_text(content: str) -> str:
+    """从飞书 post JSON 中提取文字节点；非 JSON 内容回退为原文。"""
+    try:
+        value: Any = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return content.strip()
+    texts: list[str] = []
+    for item in _walk_objects(value):
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text.strip())
+    return "\n".join(dict.fromkeys(texts))
+
+
 class LarkClient:
     def __init__(self, *, profile: str, binary: Optional[str] = None) -> None:
         self.profile = profile
@@ -1262,31 +1281,28 @@ async def process_source_pending_messages(
             continue
 
         # 图片只需从飞书下载一次；QQ 的 file_info 仍按目标群分别上传。
-        if message.msg_type == "image":
-            image_key = extract_image_key(message.content)
-            if not image_key:
+        if message.msg_type in {"image", "post"}:
+            image_keys = extract_image_keys(message.content)
+            if not image_keys and message.msg_type == "image":
                 raise BridgeError("飞书图片消息缺少 image_key")
-            with tempfile.TemporaryDirectory(prefix="lark-qq-image-") as directory:
-                image_path = await asyncio.to_thread(
-                    lark.download_image,
-                    message_id=message.message_id,
-                    image_key=image_key,
-                    output_directory=Path(directory),
-                )
+            post_text = extract_post_text(message.content) if message.msg_type == "post" else ""
+            if post_text:
                 results = await asyncio.gather(
-                    *(
-                        deliver_to_group(
-                            target_group,
-                            lambda group: send_group_image(api, http_client, group, image_path),
-                        )
-                        for target_group in group_openids
-                    ),
+                    *(deliver_to_group(target_group, lambda group: send_group_text(api, group, format_lark_text(source_name, post_text))) for target_group in group_openids),
                     return_exceptions=True,
                 )
                 failures = [result for result in results if isinstance(result, Exception)]
                 forwarded += sum(result is True for result in results)
                 if failures:
                     raise failures[0]
+            with tempfile.TemporaryDirectory(prefix="lark-qq-image-") as directory:
+                for index, image_key in enumerate(image_keys):
+                    image_path = await asyncio.to_thread(lark.download_image, message_id=message.message_id, image_key=image_key, output_directory=Path(directory))
+                    results = await asyncio.gather(*(deliver_to_group(target_group, lambda group: send_group_image(api, http_client, group, image_path)) for target_group in group_openids), return_exceptions=True)
+                    failures = [result for result in results if isinstance(result, Exception)]
+                    forwarded += sum(result is True for result in results)
+                    if failures:
+                        raise failures[0]
             advance(message)
             continue
 
