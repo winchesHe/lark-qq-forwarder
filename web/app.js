@@ -45,6 +45,7 @@
     replayTitle: document.querySelector("#replay-title-copy"),
     replayDetail: document.querySelector("#replay-detail"),
     channelSelect: document.querySelector("#channel-select"),
+    replayGroupSelect: document.querySelector("#replay-group-select"),
     replayButton: document.querySelector("#replay-button"),
     cancelReplayButton: document.querySelector("#cancel-replay-button"),
     replaySummary: document.querySelector("#replay-summary"),
@@ -426,7 +427,19 @@
       const selected = readyChannels.some(function (channel) {
         return channel.name === selectedBefore;
       }) ? selectedBefore : readyChannels[0].name;
-      elements.channelSelect.value = selected;
+    elements.channelSelect.value = selected;
+    }
+    if (elements.replayGroupSelect) {
+      const groups = getRuntimeGroups().filter(group => group.status === "active");
+      const previous = new Set(Array.from(elements.replayGroupSelect.selectedOptions).map(option => option.value));
+      elements.replayGroupSelect.replaceChildren();
+      groups.forEach(group => {
+        const option = makeElement("option", "", group.label || `QQ 群 · ${group.display_id || "未知"}`);
+        option.value = group.binding_id;
+        option.selected = previous.size === 0 || previous.has(option.value);
+        elements.replayGroupSelect.appendChild(option);
+      });
+      elements.replayGroupSelect.disabled = groups.length === 0 || operation.state === "running";
     }
 
     const state = renderOperationBadge(elements.replayBadge, operation, "idle", operationLabels);
@@ -692,8 +705,10 @@
       if (!channel) return;
       const rawIds = elements.messageIds ? elements.messageIds.value : "";
       const messageIds = rawIds.split(/[，,\s]+/).map(value => value.trim()).filter(Boolean);
-      if (window.confirm(`将把“${channel}”${messageIds.length ? `选中的 ${messageIds.length} 条消息` : "全部待补发消息"}补发到当前 QQ 群，消息会真实发送。确定继续吗？`)) {
-        runAction("/api/actions/replay", "频道补发", { channel: channel, message_ids: messageIds });
+      const bindingIds = elements.replayGroupSelect ? Array.from(elements.replayGroupSelect.selectedOptions).map(option => option.value) : [];
+      if (!bindingIds.length) { window.alert("请至少选择一个目标 QQ 群"); return; }
+      if (window.confirm(`将把“${channel}”${messageIds.length ? `选中的 ${messageIds.length} 条消息` : "全部待补发消息"}补发到 ${bindingIds.length} 个 QQ 群，消息会真实发送。确定继续吗？`)) {
+        runAction("/api/actions/replay", "频道补发", { channel: channel, message_ids: messageIds, binding_ids: bindingIds });
       }
     });
     if (elements.previewReplayButton) elements.previewReplayButton.addEventListener("click", async function () {

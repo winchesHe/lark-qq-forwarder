@@ -73,10 +73,17 @@ async def _replay_channel_impl(
     lark_profile: str = DEFAULT_LARK_PROFILE,
     lark_client: Optional[LarkClient] = None,
     message_ids: Optional[set[str]] = None,
+    binding_ids: Optional[set[str]] = None,
     progress_path: Optional[Path] = None,
 ) -> ReplaySummary:
     qq_state = StateStore.load(state_path)
-    group_openids = qq_state.active_group_openids()
+    selected = binding_ids or set()
+    groups = [group for group in qq_state.group_bindings if group.get("status") == "active"]
+    if selected:
+        groups = [group for group in groups if group.get("binding_id") in selected]
+    group_openids = [group["group_openid"] for group in groups if isinstance(group.get("group_openid"), str)]
+    if not selected and not group_openids:
+        group_openids = qq_state.active_group_openids()
     if not group_openids:
         raise BridgeError("尚未绑定 QQ 群，请先运行 bind")
 
@@ -177,6 +184,7 @@ async def replay_channel(
     lark_profile: str = DEFAULT_LARK_PROFILE,
     lark_client: Optional[LarkClient] = None,
     message_ids: Optional[set[str]] = None,
+    binding_ids: Optional[set[str]] = None,
     progress_path: Optional[Path] = None,
     process_lock_path: Path = DEFAULT_PROCESS_LOCK,
 ) -> ReplaySummary:
@@ -189,6 +197,7 @@ async def replay_channel(
             lark_profile=lark_profile,
             lark_client=lark_client,
             message_ids=message_ids,
+            binding_ids=binding_ids,
             progress_path=progress_path,
         )
 
@@ -200,6 +209,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--lark-profile", default=DEFAULT_LARK_PROFILE)
     parser.add_argument("--message-id", action="append", dest="message_ids")
+    parser.add_argument("--binding-id", action="append", dest="binding_ids")
     parser.add_argument("--progress-path", type=Path)
     return parser.parse_args()
 
@@ -212,6 +222,7 @@ async def async_main() -> None:
         state_path=args.state,
         lark_profile=args.lark_profile,
         message_ids=set(args.message_ids) if args.message_ids else None,
+        binding_ids=set(args.binding_ids) if args.binding_ids else None,
         progress_path=args.progress_path,
     )
     print(

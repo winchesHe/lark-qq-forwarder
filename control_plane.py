@@ -202,6 +202,7 @@ class ControlPlaneConfig:
         force_end: bool = False,
         channel: Optional[str] = None,
         message_ids: Optional[list[str]] = None,
+        binding_ids: Optional[list[str]] = None,
     ) -> list[str]:
         common = [
             "--input",
@@ -252,6 +253,9 @@ class ControlPlaneConfig:
             if message_ids:
                 for message_id in message_ids:
                     command.extend(["--message-id", message_id])
+            if binding_ids:
+                for binding_id in binding_ids:
+                    command.extend(["--binding-id", binding_id])
             command.extend(["--progress-path", str(self.state_path.with_name(".replay-progress.json"))])
             return command
         if action == "run":
@@ -1234,7 +1238,7 @@ class ProcessSupervisor:
                 start_failure_message="prime 进程未能启动，请检查本机 Python 环境后重试",
             )
 
-    def replay(self, channel_name: str, message_ids: Optional[list[str]] = None) -> dict[str, Any]:
+    def replay(self, channel_name: str, message_ids: Optional[list[str]] = None, binding_ids: Optional[list[str]] = None) -> dict[str, Any]:
         if not isinstance(channel_name, str) or not channel_name.strip():
             raise InvalidAction("请选择要补发的频道")
         with self._lock:
@@ -1247,12 +1251,20 @@ class ProcessSupervisor:
             }
             if channel_name not in available_names:
                 raise InvalidAction("指定频道未配置或游标不可用")
+            active_binding_ids = {
+                group.get("binding_id")
+                for group in _state_summary(self.config.state_path).get("qq_groups", [])
+                if group.get("status") == "active" and isinstance(group.get("binding_id"), str)
+            }
+            selected_binding_ids = list(dict.fromkeys(binding_ids or []))
+            if selected_binding_ids and not set(selected_binding_ids).issubset(active_binding_ids):
+                raise InvalidAction("目标 QQ 群不存在或当前未启用")
             self._ensure_action_available_locked(requires_stopped=True)
             return self._start_operation_locked(
                 operation_name=OP_REPLAY,
                 role=ROLE_REPLAY,
                 mode=channel_name,
-                command=self.config.command("replay", channel=channel_name, message_ids=message_ids),
+                command=self.config.command("replay", channel=channel_name, message_ids=message_ids, binding_ids=selected_binding_ids),
                 requested_event="replay_requested",
                 requested_message=f"已接受频道「{channel_name}」补发请求",
                 start_failure_message="补发进程未能启动，请检查本机 Python 环境后重试",
@@ -1884,7 +1896,11 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                 if message_ids is not None and (not isinstance(message_ids, list) or not all(isinstance(item, str) for item in message_ids)):
                     self._error("补发消息选择参数无效", status=400)
                     return
-                status = self.server.supervisor.replay(channel_name, message_ids=message_ids)
+                binding_ids = body.get("binding_ids")
+                if binding_ids is not None and (not isinstance(binding_ids, list) or not all(isinstance(item, str) for item in binding_ids)):
+                    self._error("补发目标群参数无效", status=400)
+                    return
+                status = self.server.supervisor.replay(channel_name, message_ids=message_ids, binding_ids=binding_ids)
             elif path == "/api/actions/replay/cancel":
                 status = self.server.supervisor.cancel_replay()
             elif path in {"/api/actions/prime", "/api/actions/prime/force-end"}:
