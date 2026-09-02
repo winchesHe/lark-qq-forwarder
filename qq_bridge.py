@@ -418,6 +418,17 @@ class StateStore:
         self.data["active_binding_id"] = active.get("binding_id") if active else None
         self.save()
 
+    def update_group_label(self, binding_id: str, label: str) -> None:
+        label = label.strip()
+        if not label or len(label) > 80:
+            raise BridgeError("QQ 群备注不能为空且不能超过 80 个字符")
+        for group in self.group_bindings:
+            if group.get("binding_id") == binding_id:
+                group["label"] = label
+                self.save()
+                return
+        raise BridgeError("未找到指定的 QQ 群绑定")
+
     def prime_input(self, input_path: Path, *, force_end: bool = False) -> int:
         absolute_path = str(input_path.resolve())
         current_size = input_path.stat().st_size if input_path.exists() else 0

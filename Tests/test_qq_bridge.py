@@ -81,6 +81,14 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(state.group_openid, "group-a")
             self.assertEqual(state.active_group_openids(), ["group-a"])
 
+    def test_update_group_label(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = StateStore.load(Path(directory) / "state.json")
+            state.add_group_binding("group-a", label="QQ 群")
+            binding_id = state.group_bindings[0]["binding_id"]
+            state.update_group_label(binding_id, "主力投递群")
+            self.assertEqual(state.group_bindings[0]["label"], "主力投递群")
+
     def test_first_prime_starts_at_end(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

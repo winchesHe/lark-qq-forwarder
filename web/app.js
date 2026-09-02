@@ -295,9 +295,18 @@
           const name = group.label || `QQ 群 ${index + 1}`;
           const suffix = group.display_id ? ` · 尾号 ${group.display_id}` : "";
           const stateText = group.status === "active" ? "投递中" : (group.status === "disabled" ? "已停用" : "需检查");
-          row.appendChild(makeElement("span", "binding-group-name", `${name}${suffix}`));
+          const nameWrap = makeElement("span", "binding-group-name");
+          nameWrap.appendChild(makeElement("span", "binding-group-label", name));
+          nameWrap.appendChild(makeElement("span", "binding-group-id", suffix || " · 未设置备注"));
+          row.appendChild(nameWrap);
           const actions = makeElement("span", "binding-group-actions");
           actions.appendChild(makeElement("span", `binding-group-state ${group.status === "active" ? "is-active" : ""}`, stateText));
+          const edit = makeElement("button", "text-button binding-group-edit", "改备注");
+          edit.type = "button";
+          edit.dataset.bindingId = group.binding_id || "";
+          edit.dataset.groupLabel = name;
+          edit.disabled = blocked || busy || busyState;
+          actions.appendChild(edit);
           const remove = makeElement("button", "text-button binding-group-remove", "删除");
           remove.type = "button";
           remove.dataset.bindingId = group.binding_id || "";
@@ -649,6 +658,13 @@
     if (elements.bindingGroupList) elements.bindingGroupList.addEventListener("click", function (event) {
       const button = event.target.closest("button[data-binding-id]");
       if (!button || !button.dataset.bindingId) return;
+      if (button.classList.contains("binding-group-edit")) {
+        const label = window.prompt("请输入 QQ 群备注（例如：主群、测试群）", button.dataset.groupLabel || "");
+        if (label !== null && label.trim()) {
+          runAction("/api/actions/groups/label", "更新 QQ 群备注", { binding_id: button.dataset.bindingId, label: label.trim() });
+        }
+        return;
+      }
       if (window.confirm("删除后将停止向这个 QQ 群投递，但不会删除历史投递记录。确定删除吗？")) {
         runAction("/api/actions/groups/remove", "删除 QQ 群", { binding_id: button.dataset.bindingId, confirm: true });
       }

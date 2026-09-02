@@ -484,9 +484,12 @@ h2 {
 .binding-group-list { display: grid; gap: 7px; margin-top: 10px; }
 .binding-group-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
 .binding-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.binding-group-label { color: var(--ink); }
+.binding-group-id { color: var(--muted); font-size: 11px; }
 .binding-group-state { flex: 0 0 auto; color: var(--muted); }
 .binding-group-state.is-active { color: var(--ok); }
 .binding-group-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.binding-group-edit { padding: 0; color: var(--accent-deep); font-size: 11px; }
 .binding-group-remove { padding: 0; color: var(--danger); font-size: 11px; }
 
 .listener-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }

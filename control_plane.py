@@ -1137,6 +1137,19 @@ class ProcessSupervisor:
             self._sync_binding_state_locked()
             return self._status_locked()
 
+    def update_group_label(self, binding_id: str, label: str) -> dict[str, Any]:
+        if not isinstance(binding_id, str) or not binding_id.strip() or not isinstance(label, str):
+            raise InvalidAction("QQ 群备注参数无效")
+        with self._lock:
+            self._refresh_processes_locked()
+            self._ensure_action_available_locked(requires_stopped=True)
+            from qq_bridge import StateStore
+            state = StateStore.load(self.config.state_path)
+            state.update_group_label(binding_id.strip(), label)
+            self._record_event_locked("group_label_updated", "已更新 QQ 群备注")
+            self._sync_binding_state_locked()
+            return self._status_locked()
+
     def cancel_bind(self) -> dict[str, Any]:
         with self._lock:
             record = self._operation_records.get(OP_BINDING)
@@ -1792,6 +1805,13 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                     self._error("删除 QQ 群参数无效", status=400)
                     return
                 status = self.server.supervisor.remove_group(binding_id, confirmed=confirmed)
+            elif path == "/api/actions/groups/label":
+                binding_id = body.get("binding_id")
+                label = body.get("label")
+                if not isinstance(binding_id, str) or not isinstance(label, str):
+                    self._error("QQ 群备注参数无效", status=400)
+                    return
+                status = self.server.supervisor.update_group_label(binding_id, label)
             elif path == "/api/actions/test":
                 status = self.server.supervisor.test()
             elif path == "/api/actions/replay":
