@@ -13,7 +13,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import httpx
 from qqbot_agent_sdk import (
@@ -34,6 +34,7 @@ KEYCHAIN_SERVICE = "codex.lark-qq-forwarder.qqbot-secret"
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT = PROJECT_DIR / "lark-notifications.jsonl"
 DEFAULT_STATE = PROJECT_DIR / ".qq-forwarder-state.json"
+DEFAULT_CHANNEL_STATE = PROJECT_DIR / ".lark-channel-cursors.json"
 DEFAULT_LARK_PROFILE = "tenant-105183"
 DEFAULT_LARK_CONTACT = "Perfecto"
 IMAGE_KEY_PATTERN = re.compile(r"\b(img_[A-Za-z0-9_-]{10,})\b")
@@ -176,6 +177,124 @@ class StateStore:
         temp_path.replace(self.path)
 
 
+def _valid_channel_position(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+@dataclass(frozen=True)
+class ChannelCursor:
+    name: str
+    chat_id: str
+    cursor_position: int
+    initial_cursor_position: int
+    recent_message_ids: tuple[str, ...]
+
+
+class ChannelCursorStore:
+    """保存每个飞书频道独立的消息位置，不保存消息正文。"""
+
+    def __init__(self, path: Path, data: dict[str, Any]) -> None:
+        self.path = path
+        self.data = data
+
+    @classmethod
+    def load(cls, path: Path) -> "ChannelCursorStore":
+        if not path.exists():
+            raise BridgeError("多频道游标文件不存在，请先建立频道游标")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BridgeError("无法读取多频道游标文件") from exc
+        if not isinstance(data, dict):
+            raise BridgeError("多频道游标文件格式无效")
+
+        channels = data.get("channels")
+        if not isinstance(channels, list) or not channels:
+            raise BridgeError("多频道游标文件没有可用频道")
+
+        normalized: list[dict[str, Any]] = []
+        names: set[str] = set()
+        chat_ids: set[str] = set()
+        for value in channels:
+            if not isinstance(value, dict):
+                raise BridgeError("多频道游标文件包含无效频道")
+            name = value.get("name")
+            chat_id = value.get("chat_id")
+            cursor_position = value.get("cursor_position")
+            initial_position = value.get(
+                "initial_cursor_position", cursor_position
+            )
+            if (
+                not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(chat_id, str)
+                or not chat_id.strip()
+                or not _valid_channel_position(cursor_position)
+                or not _valid_channel_position(initial_position)
+                or name in names
+                or chat_id in chat_ids
+            ):
+                raise BridgeError("多频道游标文件包含重复或无效频道")
+            recent_ids = value.get("recent_message_ids", [])
+            if not isinstance(recent_ids, list) or not all(
+                isinstance(item, str) for item in recent_ids
+            ):
+                raise BridgeError("多频道游标文件包含无效消息记录")
+            item = dict(value)
+            item["initial_cursor_position"] = initial_position
+            item["recent_message_ids"] = recent_ids[-200:]
+            normalized.append(item)
+            names.add(name)
+            chat_ids.add(chat_id)
+
+        data = dict(data)
+        data["channels"] = normalized
+        return cls(path=path, data=data)
+
+    def names(self) -> list[str]:
+        return [item["name"] for item in self.data["channels"]]
+
+    def get(self, name: str) -> ChannelCursor:
+        for value in self.data["channels"]:
+            if value["name"] != name:
+                continue
+            recent_ids = value.get("recent_message_ids", [])
+            return ChannelCursor(
+                name=value["name"],
+                chat_id=value["chat_id"],
+                cursor_position=value["cursor_position"],
+                initial_cursor_position=value["initial_cursor_position"],
+                recent_message_ids=tuple(recent_ids),
+            )
+        raise BridgeError("指定频道未在游标配置中初始化")
+
+    def has_processed_message(self, name: str, message_id: str) -> bool:
+        return message_id in self.get(name).recent_message_ids
+
+    def advance(self, name: str, position: int, message_id: str) -> None:
+        for value in self.data["channels"]:
+            if value["name"] != name:
+                continue
+            current = value["cursor_position"]
+            value["cursor_position"] = max(current, position)
+            recent_ids = value.get("recent_message_ids", [])
+            recent_ids = [item for item in recent_ids if item != message_id]
+            recent_ids.append(message_id)
+            value["recent_message_ids"] = recent_ids[-200:]
+            self.save()
+            return
+        raise BridgeError("指定频道未在游标配置中初始化")
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        temp_path.write_text(
+            json.dumps(self.data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temp_path.replace(self.path)
+
+
 @dataclass(frozen=True)
 class JSONLRecord:
     next_offset: int
@@ -200,10 +319,14 @@ def read_next_record(input_path: Path, offset: int) -> Optional[JSONLRecord]:
     return JSONLRecord(next_offset=next_offset, payload=payload)
 
 
+def _normalize_notification_text(value: str) -> str:
+    return " ".join(value.replace("～", "~").strip().casefold().split())
+
+
 def notification_matches_contact(
     payload: dict[str, Any], contact_name: str
 ) -> bool:
-    clue = contact_name.strip().casefold()
+    clue = _normalize_notification_text(contact_name)
     if not clue:
         return False
     values = [payload.get("title")]
@@ -211,7 +334,7 @@ def notification_matches_contact(
     if isinstance(raw_texts, list):
         values.extend(raw_texts)
     return any(
-        clue in value.strip().casefold()
+        clue in _normalize_notification_text(value)
         for value in values
         if isinstance(value, str)
     )
@@ -589,28 +712,29 @@ async def send_test(state: StateStore) -> None:
         await http_client.aclose()
 
 
-async def process_pending_messages(
+async def process_source_pending_messages(
     *,
-    state: StateStore,
+    source_name: str,
+    source_chat_id: str,
+    source_sender_id: Optional[str],
+    cursor: int,
     lark: LarkClient,
-    target: LarkTarget,
     api: QQApiClient,
     http_client: httpx.AsyncClient,
     group_openid: str,
+    has_processed: Callable[[str], bool],
+    advance: Callable[[LarkMessage], None],
 ) -> tuple[int, int]:
-    cursor = state.message_position
-    if cursor is None:
-        raise BridgeError("飞书消息游标尚未初始化")
-    messages = await asyncio.to_thread(lark.list_messages, target.chat_id)
+    messages = await asyncio.to_thread(lark.list_messages, source_chat_id)
     pending = pending_messages(messages, cursor)
     forwarded = 0
 
     for message in pending:
-        if state.has_processed_message(message.message_id):
-            state.advance_message(message.position, message.message_id)
+        if has_processed(message.message_id):
+            advance(message)
             continue
-        if message.sender_id != target.sender_id:
-            state.advance_message(message.position, message.message_id)
+        if source_sender_id is not None and message.sender_id != source_sender_id:
+            advance(message)
             continue
 
         if message.msg_type == "text":
@@ -618,7 +742,7 @@ async def process_pending_messages(
                 await send_group_text(
                     api,
                     group_openid,
-                    format_lark_text(target.name, message.content),
+                    format_lark_text(source_name, message.content),
                 )
                 forwarded += 1
         elif message.msg_type == "image":
@@ -642,9 +766,65 @@ async def process_pending_messages(
         else:
             logging.info("跳过暂不支持的飞书消息类型：%s", message.msg_type)
 
-        state.advance_message(message.position, message.message_id)
+        advance(message)
 
     return len(pending), forwarded
+
+
+async def process_pending_messages(
+    *,
+    state: StateStore,
+    lark: LarkClient,
+    target: LarkTarget,
+    api: QQApiClient,
+    http_client: httpx.AsyncClient,
+    group_openid: str,
+) -> tuple[int, int]:
+    cursor = state.message_position
+    if cursor is None:
+        raise BridgeError("飞书消息游标尚未初始化")
+    return await process_source_pending_messages(
+        source_name=target.name,
+        source_chat_id=target.chat_id,
+        source_sender_id=target.sender_id,
+        cursor=cursor,
+        lark=lark,
+        api=api,
+        http_client=http_client,
+        group_openid=group_openid,
+        has_processed=state.has_processed_message,
+        advance=lambda message: state.advance_message(
+            message.position, message.message_id
+        ),
+    )
+
+
+async def process_channel_pending_messages(
+    *,
+    cursors: ChannelCursorStore,
+    channel_name: str,
+    lark: LarkClient,
+    api: QQApiClient,
+    http_client: httpx.AsyncClient,
+    group_openid: str,
+) -> tuple[int, int]:
+    channel = cursors.get(channel_name)
+    return await process_source_pending_messages(
+        source_name=channel.name,
+        source_chat_id=channel.chat_id,
+        source_sender_id=None,
+        cursor=channel.cursor_position,
+        lark=lark,
+        api=api,
+        http_client=http_client,
+        group_openid=group_openid,
+        has_processed=lambda message_id: cursors.has_processed_message(
+            channel.name, message_id
+        ),
+        advance=lambda message: cursors.advance(
+            channel.name, message.position, message.message_id
+        ),
+    )
 
 
 async def forward_forever(
@@ -655,6 +835,7 @@ async def forward_forever(
     target: LarkTarget,
     contact_name: str,
     poll_interval: float = 0.25,
+    channel_state_path: Path = DEFAULT_CHANNEL_STATE,
 ) -> None:
     group_openid = state.group_openid
     if not group_openid:
@@ -663,9 +844,13 @@ async def forward_forever(
         chat_id=target.chat_id,
         sender_id=target.sender_id,
     )
+    channel_cursors = ChannelCursorStore.load(channel_state_path)
     offset = state.prime_input(input_path)
     api, http_client = await create_api()
-    print("飞书 → QQ 转发已启动；通知仅作唤醒，正文由飞书 API 获取。")
+    print(
+        "飞书 → QQ 转发已启动；自动来源：Perfecto 和 "
+        f"{len(channel_cursors.names())} 个频道；通知仅作唤醒。"
+    )
 
     try:
         while True:
@@ -680,25 +865,39 @@ async def forward_forever(
                 state.advance_input(offset)
                 print("跳过一行无法解析的通知唤醒记录。")
                 continue
-            if not notification_matches_contact(payload, contact_name):
-                offset = record.next_offset
-                state.advance_input(offset)
-                continue
+            if notification_matches_contact(payload, contact_name):
+                pending_count, forwarded_count = await process_pending_messages(
+                    state=state,
+                    lark=lark,
+                    target=target,
+                    api=api,
+                    http_client=http_client,
+                    group_openid=group_openid,
+                )
+                print(
+                    f"Perfecto API 检查完成：未处理 {pending_count} 条，"
+                    f"已转发 {forwarded_count} 条。"
+                )
 
-            pending_count, forwarded_count = await process_pending_messages(
-                state=state,
-                lark=lark,
-                target=target,
-                api=api,
-                http_client=http_client,
-                group_openid=group_openid,
-            )
+            for channel_name in channel_cursors.names():
+                if not notification_matches_contact(payload, channel_name):
+                    continue
+                pending_count, forwarded_count = (
+                    await process_channel_pending_messages(
+                        cursors=channel_cursors,
+                        channel_name=channel_name,
+                        lark=lark,
+                        api=api,
+                        http_client=http_client,
+                        group_openid=group_openid,
+                    )
+                )
+                print(
+                    f"{channel_name} API 检查完成：未处理 {pending_count} 条，"
+                    f"已转发 {forwarded_count} 条。"
+                )
             offset = record.next_offset
             state.advance_input(offset)
-            print(
-                f"飞书 API 检查完成：未处理 {pending_count} 条，"
-                f"已转发 {forwarded_count} 条。"
-            )
     finally:
         await http_client.aclose()
 
@@ -744,6 +943,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--rebind", action="store_true")
     parser.add_argument("--force-end", action="store_true")
+    parser.add_argument("--channel-state", type=Path, default=DEFAULT_CHANNEL_STATE)
     parser.add_argument("--lark-profile", default=DEFAULT_LARK_PROFILE)
     parser.add_argument("--lark-contact", default=DEFAULT_LARK_CONTACT)
     parser.add_argument("--lark-cli")
@@ -777,6 +977,7 @@ async def async_main() -> None:
             lark=lark,
             target=target,
             contact_name=args.lark_contact,
+            channel_state_path=args.channel_state,
         )
 
 

@@ -7,6 +7,7 @@ VENV_DIR="$FORWARDER_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
 LARK_FORWARDER_PROFILE="tenant-105183"
 LARK_FORWARDER_CONTACT="Perfecto"
+LARK_FORWARDER_CHANNEL_STATE="$FORWARDER_DIR/.lark-channel-cursors.json"
 
 cd "$FORWARDER_DIR"
 
@@ -37,7 +38,8 @@ PROBE_PID=$!
 
 "$PYTHON" "$FORWARDER_DIR/qq_bridge.py" run \
   --lark-profile "$LARK_FORWARDER_PROFILE" \
-  --lark-contact "$LARK_FORWARDER_CONTACT" &
+  --lark-contact "$LARK_FORWARDER_CONTACT" \
+  --channel-state "$LARK_FORWARDER_CHANNEL_STATE" &
 BRIDGE_PID=$!
 
 echo "飞书 → QQ 转发已启动。按 Control+C 停止。"
