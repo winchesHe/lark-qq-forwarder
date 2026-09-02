@@ -260,6 +260,14 @@ class LarkMessageTests(unittest.TestCase):
         formatted = format_lark_text("Perfecto", "后台文本\n")
         self.assertRegex(formatted, r"^【飞书·Perfecto】 20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n后台文本$")
         self.assertEqual(format_lark_text("Perfecto", "2026-09-02 10:15:53 已有时间"), "2026-09-02 10:15:53 已有时间")
+        self.assertEqual(
+            format_lark_text("Perfecto", "吴均2026-09-02 22:06:00\n正文"),
+            "吴均2026-09-02 22:06:00\n正文",
+        )
+        self.assertEqual(
+            format_lark_text("Perfecto", "2026年9月2日 22:06\n正文"),
+            "2026年9月2日 22:06\n正文",
+        )
 
     def test_incremental_pagination_stops_at_local_cursor(self) -> None:
         client = LarkClient(profile="fixture")
