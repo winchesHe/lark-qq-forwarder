@@ -26,6 +26,7 @@
     bindingBadge: document.querySelector("#binding-badge"),
     bindingTitle: document.querySelector("#binding-title-copy"),
     bindingDetail: document.querySelector("#binding-detail"),
+    bindingGroupList: document.querySelector("#binding-group-list"),
     bindButton: document.querySelector("#bind-button"),
     addBindButton: document.querySelector("#add-bind-button"),
     rebindButton: document.querySelector("#rebind-button"),
@@ -282,6 +283,24 @@
     if (operation.failure_message) detail = operation.failure_message;
     setText(elements.bindingTitle, title);
     setText(elements.bindingDetail, detail);
+
+    if (elements.bindingGroupList) {
+      elements.bindingGroupList.replaceChildren();
+      const groups = Array.isArray(runtime.qq_groups) ? runtime.qq_groups : [];
+      if (!groups.length) {
+        elements.bindingGroupList.appendChild(makeElement("span", "panel-footnote", "暂无已加入的 QQ 群"));
+      } else {
+        groups.forEach(function (group, index) {
+          const row = makeElement("div", "binding-group-row");
+          const name = group.label || `QQ 群 ${index + 1}`;
+          const suffix = group.display_id ? ` · 尾号 ${group.display_id}` : "";
+          const stateText = group.status === "active" ? "投递中" : (group.status === "disabled" ? "已停用" : "需检查");
+          row.appendChild(makeElement("span", "binding-group-name", `${name}${suffix}`));
+          row.appendChild(makeElement("span", `binding-group-state ${group.status === "active" ? "is-active" : ""}`, stateText));
+          elements.bindingGroupList.appendChild(row);
+        });
+      }
+    }
 
     elements.bindButton.disabled = busy || busyState || blocked || state === "bound";
     elements.rebindButton.disabled = busy || busyState || blocked || state !== "bound";

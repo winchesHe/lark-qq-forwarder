@@ -480,6 +480,13 @@ h2 {
   min-width: 0;
 }
 
+.binding-groups-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
+.binding-group-list { display: grid; gap: 7px; margin-top: 10px; }
+.binding-group-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.binding-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.binding-group-state { flex: 0 0 auto; color: var(--muted); }
+.binding-group-state.is-active { color: var(--ok); }
+
 .listener-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }
 .listener-inline { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); }
 .listener-channel-heading { margin-top: 18px; }

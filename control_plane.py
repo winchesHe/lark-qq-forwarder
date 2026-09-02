@@ -323,7 +323,14 @@ def _state_summary(path: Path) -> dict[str, Any]:
         "qq_group_bound": isinstance(group_openid, str) and bool(group_openid),
         "qq_group_count": len(groups) if isinstance(groups, list) else (1 if group_openid else 0),
         "qq_groups": [
-            {"label": group.get("label", "QQ 群"), "status": group.get("status", "unknown"), "verification_state": group.get("verification_state", "unknown")}
+            {
+                "binding_id": group.get("binding_id"),
+                "label": group.get("label", "QQ 群"),
+                "status": group.get("status", "unknown"),
+                "verification_state": group.get("verification_state", "unknown"),
+                # 仅展示短尾号，方便区分群，不泄露完整 openid。
+                "display_id": group.get("group_openid", "")[-6:].upper(),
+            }
             for group in groups if isinstance(group, dict) and isinstance(group.get("group_openid"), str)
         ] if isinstance(groups, list) else [],
         "lark_session_initialized": (
