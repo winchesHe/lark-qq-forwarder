@@ -1122,6 +1122,21 @@ class ProcessSupervisor:
                 start_failure_message="绑定进程未能启动，请检查本机 Python 环境后重试",
             )
 
+    def remove_group(self, binding_id: str, *, confirmed: bool = False) -> dict[str, Any]:
+        if not confirmed:
+            raise ConfirmationRequired("删除 QQ 群绑定前必须明确确认")
+        if not isinstance(binding_id, str) or not binding_id.strip():
+            raise InvalidAction("QQ 群绑定参数无效")
+        with self._lock:
+            self._refresh_processes_locked()
+            self._ensure_action_available_locked(requires_stopped=True)
+            from qq_bridge import StateStore
+            state = StateStore.load(self.config.state_path)
+            state.remove_group_binding(binding_id.strip())
+            self._record_event_locked("group_removed", "已删除一个 QQ 群绑定")
+            self._sync_binding_state_locked()
+            return self._status_locked()
+
     def cancel_bind(self) -> dict[str, Any]:
         with self._lock:
             record = self._operation_records.get(OP_BINDING)
@@ -1770,6 +1785,13 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                 )
             elif path == "/api/actions/bind/cancel":
                 status = self.server.supervisor.cancel_bind()
+            elif path == "/api/actions/groups/remove":
+                binding_id = body.get("binding_id")
+                confirmed = body.get("confirm", False)
+                if not isinstance(binding_id, str) or not isinstance(confirmed, bool):
+                    self._error("删除 QQ 群参数无效", status=400)
+                    return
+                status = self.server.supervisor.remove_group(binding_id, confirmed=confirmed)
             elif path == "/api/actions/test":
                 status = self.server.supervisor.test()
             elif path == "/api/actions/replay":

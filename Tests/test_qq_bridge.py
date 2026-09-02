@@ -70,6 +70,17 @@ class StateStoreTests(unittest.TestCase):
                 {"group-a": "disabled", "group-b": "active"},
             )
 
+    def test_remove_group_binding_selects_another_active_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = StateStore.load(Path(directory) / "state.json")
+            state.add_group_binding("group-a", label="主群")
+            state.add_group_binding("group-b", label="备用群")
+            state.remove_group_binding(state.group_bindings[1]["binding_id"])
+
+            self.assertEqual(len(state.group_bindings), 1)
+            self.assertEqual(state.group_openid, "group-a")
+            self.assertEqual(state.active_group_openids(), ["group-a"])
+
     def test_first_prime_starts_at_end(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

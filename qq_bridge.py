@@ -406,6 +406,18 @@ class StateStore:
             self.save()
             return
 
+    def remove_group_binding(self, binding_id: str) -> None:
+        """按稳定绑定 ID 删除一个 QQ 群，不清理投递记录，避免重新加入后重复发送。"""
+        groups = self.group_bindings
+        removed = next((group for group in groups if group.get("binding_id") == binding_id), None)
+        if removed is None:
+            raise BridgeError("未找到指定的 QQ 群绑定")
+        groups[:] = [group for group in groups if group.get("binding_id") != binding_id]
+        active = next((group for group in groups if group.get("status") == "active"), None)
+        self.data["group_openid"] = active.get("group_openid") if active else None
+        self.data["active_binding_id"] = active.get("binding_id") if active else None
+        self.save()
+
     def prime_input(self, input_path: Path, *, force_end: bool = False) -> int:
         absolute_path = str(input_path.resolve())
         current_size = input_path.stat().st_size if input_path.exists() else 0

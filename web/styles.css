@@ -486,6 +486,8 @@ h2 {
 .binding-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .binding-group-state { flex: 0 0 auto; color: var(--muted); }
 .binding-group-state.is-active { color: var(--ok); }
+.binding-group-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.binding-group-remove { padding: 0; color: var(--danger); font-size: 11px; }
 
 .listener-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }
 .listener-inline { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); }

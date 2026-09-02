@@ -296,7 +296,14 @@
           const suffix = group.display_id ? ` · 尾号 ${group.display_id}` : "";
           const stateText = group.status === "active" ? "投递中" : (group.status === "disabled" ? "已停用" : "需检查");
           row.appendChild(makeElement("span", "binding-group-name", `${name}${suffix}`));
-          row.appendChild(makeElement("span", `binding-group-state ${group.status === "active" ? "is-active" : ""}`, stateText));
+          const actions = makeElement("span", "binding-group-actions");
+          actions.appendChild(makeElement("span", `binding-group-state ${group.status === "active" ? "is-active" : ""}`, stateText));
+          const remove = makeElement("button", "text-button binding-group-remove", "删除");
+          remove.type = "button";
+          remove.dataset.bindingId = group.binding_id || "";
+          remove.disabled = blocked || busy || busyState;
+          actions.appendChild(remove);
+          row.appendChild(actions);
           elements.bindingGroupList.appendChild(row);
         });
       }
@@ -638,6 +645,13 @@
         }
       } catch (error) { setText(elements.listenerFeedback, error.message || "新增监听失败。"); }
       finally { elements.listenerAddButton.disabled = false; }
+    });
+    if (elements.bindingGroupList) elements.bindingGroupList.addEventListener("click", function (event) {
+      const button = event.target.closest("button[data-binding-id]");
+      if (!button || !button.dataset.bindingId) return;
+      if (window.confirm("删除后将停止向这个 QQ 群投递，但不会删除历史投递记录。确定删除吗？")) {
+        runAction("/api/actions/groups/remove", "删除 QQ 群", { binding_id: button.dataset.bindingId, confirm: true });
+      }
     });
     elements.replayButton.addEventListener("click", function () {
       const channel = elements.channelSelect.value;
