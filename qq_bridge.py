@@ -1089,9 +1089,13 @@ async def send_group_image(
 
 
 async def bind_group(
-    state: StateStore, *, rebind: bool = False, keep_existing: bool = False
+    state: StateStore, *, rebind: bool = False, keep_existing: bool = False,
+    rename_binding_id: Optional[str] = None,
 ) -> str:
-    if state.group_openid and not rebind and not keep_existing:
+    if rename_binding_id:
+        if not any(group.get("binding_id") == rename_binding_id for group in state.group_bindings):
+            raise BridgeError("未找到指定的 QQ 群绑定")
+    elif state.group_openid and not rebind and not keep_existing:
         print("群聊已经绑定；如需更换目标群，请使用 bind --rebind")
         return state.group_openid
 
@@ -1104,6 +1108,21 @@ async def bind_group(
     async def on_message(event_type: str, raw: dict[str, Any]) -> None:
         event = EventParser().parse(event_type, raw)
         if not event or event.chat_scope != "group":
+            return
+        if rename_binding_id:
+            target_group = next((group for group in state.group_bindings if group.get("binding_id") == rename_binding_id), None)
+            if not target_group or event.chat_id != target_group.get("group_openid"):
+                return
+            label = event.content.strip()
+            if not label or len(label) > 80:
+                return
+            try:
+                await send_group_text(api, event.chat_id, f"已将本群备注设置为：{label}", reply_to=event.message_id)
+                state.update_group_label(rename_binding_id, label)
+            except BridgeError as exc:
+                main_loop.call_soon_threadsafe(fatal_error.put_nowait, f"群备注保存失败：{exc}")
+                return
+            bound.set()
             return
         try:
             await send_group_text(
@@ -1131,7 +1150,7 @@ async def bind_group(
 
     callbacks = WSCallbacks(
         on_message_event=on_message,
-        on_connected=lambda: print("QQ 网关已连接，请在目标群发送：@qclaw 绑定测试"),
+        on_connected=lambda: print("QQ 网关已连接，请在目标群发送：@qclaw 绑定测试" if not rename_binding_id else "QQ 网关已连接，请在目标群 @Bot 发送要设置的群备注"),
         on_disconnected=lambda: print("QQ 网关连接已断开，正在尝试恢复……"),
         on_fatal_error=on_fatal_error,
         get_token=api.ensure_token_sync,
@@ -1159,6 +1178,8 @@ async def bind_group(
             raise BridgeError(error_task.result())
         if timeout_task in done:
             raise BridgeError("90 秒内未收到可识别的 QQ 群 @ 消息，请确认机器人已入群并开启群消息权限")
+        if rename_binding_id:
+            return rename_binding_id
         if not state.group_openid:
             raise BridgeError("收到了群消息，但未能保存群标识")
         return state.group_openid
@@ -1627,12 +1648,13 @@ async def prime_forwarder(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="飞书 Perfecto 消息到 QQ 群转发器")
     parser.add_argument(
-        "command", choices=["check", "prime", "bind", "test", "run"]
+        "command", choices=["check", "prime", "bind", "rename", "test", "run"]
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--rebind", action="store_true")
     parser.add_argument("--add", action="store_true", help="保留现有群并新增绑定")
+    parser.add_argument("--binding-id")
     parser.add_argument("--force-end", action="store_true")
     parser.add_argument("--channel-state", type=Path, default=DEFAULT_CHANNEL_STATE)
     parser.add_argument("--lark-profile", default=DEFAULT_LARK_PROFILE)
@@ -1660,6 +1682,8 @@ async def async_main() -> None:
         )
     elif args.command == "bind":
         await bind_group(state, rebind=args.rebind, keep_existing=args.add)
+    elif args.command == "rename":
+        await bind_group(state, rename_binding_id=args.binding_id)
     elif args.command == "test":
         await send_test(state)
     elif args.command == "run":

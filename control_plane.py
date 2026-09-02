@@ -225,6 +225,10 @@ class ControlPlaneConfig:
             if keep_existing:
                 command.append("--add")
             return command
+        if action == "rename":
+            if not channel:
+                raise ValueError("群绑定 ID 不能为空")
+            return [str(self.python_executable), str(self.bridge_script), "rename", *common, "--binding-id", channel]
         if action == "test":
             return [str(self.python_executable), str(self.bridge_script), "test", *common]
         if action == "replay":
@@ -1150,6 +1154,22 @@ class ProcessSupervisor:
             self._sync_binding_state_locked()
             return self._status_locked()
 
+    def rename_group(self, binding_id: str) -> dict[str, Any]:
+        if not isinstance(binding_id, str) or not binding_id.strip():
+            raise InvalidAction("QQ 群绑定参数无效")
+        with self._lock:
+            self._refresh_processes_locked()
+            self._ensure_action_available_locked(requires_stopped=True)
+            return self._start_operation_locked(
+                operation_name=OP_BINDING,
+                role=ROLE_BIND,
+                mode="rename",
+                command=self.config.command("rename", channel=binding_id.strip()),
+                requested_event="group_rename_requested",
+                requested_message="已进入群备注等待状态，请在目标 QQ 群 @Bot 发送群备注",
+                start_failure_message="群备注等待进程未能启动，请检查本机 Python 环境后重试",
+            )
+
     def cancel_bind(self) -> dict[str, Any]:
         with self._lock:
             record = self._operation_records.get(OP_BINDING)
@@ -1812,6 +1832,12 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                     self._error("QQ 群备注参数无效", status=400)
                     return
                 status = self.server.supervisor.update_group_label(binding_id, label)
+            elif path == "/api/actions/groups/rename":
+                binding_id = body.get("binding_id")
+                if not isinstance(binding_id, str):
+                    self._error("QQ 群绑定参数无效", status=400)
+                    return
+                status = self.server.supervisor.rename_group(binding_id)
             elif path == "/api/actions/test":
                 status = self.server.supervisor.test()
             elif path == "/api/actions/replay":

@@ -301,7 +301,7 @@
           row.appendChild(nameWrap);
           const actions = makeElement("span", "binding-group-actions");
           actions.appendChild(makeElement("span", `binding-group-state ${group.status === "active" ? "is-active" : ""}`, stateText));
-          const edit = makeElement("button", "text-button binding-group-edit", "改备注");
+          const edit = makeElement("button", "text-button binding-group-edit", "让 Bot 改名");
           edit.type = "button";
           edit.dataset.bindingId = group.binding_id || "";
           edit.dataset.groupLabel = name;
@@ -659,9 +659,8 @@
       const button = event.target.closest("button[data-binding-id]");
       if (!button || !button.dataset.bindingId) return;
       if (button.classList.contains("binding-group-edit")) {
-        const label = window.prompt("请输入 QQ 群备注（例如：主群、测试群）", button.dataset.groupLabel || "");
-        if (label !== null && label.trim()) {
-          runAction("/api/actions/groups/label", "更新 QQ 群备注", { binding_id: button.dataset.bindingId, label: label.trim() });
+        if (window.confirm("点击确定后，请在目标 QQ 群里 @Bot 发送群名称。等待时间为 90 秒。")) {
+          runAction("/api/actions/groups/rename", "等待 QQ 群名", { binding_id: button.dataset.bindingId });
         }
         return;
       }
