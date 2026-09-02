@@ -339,6 +339,36 @@ def _state_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _metrics_summary(path: Path) -> dict[str, Any]:
+    """读取转发指标摘要，不把消息正文或原始标识暴露给控制面。"""
+    if not path.exists():
+        return {"available": False, "updated_at": None, "sources": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {"available": False, "updated_at": None, "sources": {}}
+    sources = data.get("sources") if isinstance(data, dict) else None
+    if not isinstance(sources, dict):
+        sources = {}
+    safe_sources = {
+        str(name): {
+            "sync_count": int(value.get("sync_count", 0)),
+            "success_count": int(value.get("success_count", 0)),
+            "failure_count": int(value.get("failure_count", 0)),
+            "forwarded_count": int(value.get("forwarded_count", 0)),
+            "last_pending": int(value.get("last_pending", 0)),
+            "last_elapsed_ms": float(value.get("last_elapsed_ms", 0.0)),
+        }
+        for name, value in sources.items()
+        if isinstance(value, dict)
+    }
+    return {
+        "available": True,
+        "updated_at": data.get("updated_at") if isinstance(data.get("updated_at"), str) else None,
+        "sources": safe_sources,
+    }
+
+
 def _channel_config_summary(path: Path) -> dict[str, Any]:
     """读取多频道配置摘要，只把名称和可用状态带到页面。"""
 
@@ -767,6 +797,9 @@ class ProcessSupervisor:
             {
                 "channel_forwarding_available": channel_replay["available"],
                 "channel_forwarding_count": ready_channel_count,
+                "forwarder_metrics": _metrics_summary(
+                    self.config.state_path.with_name(".qq-forwarder-metrics.json")
+                ),
             }
         )
         return {

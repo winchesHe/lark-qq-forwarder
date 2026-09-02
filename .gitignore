@@ -4,6 +4,16 @@ __pycache__/
 *.pyc
 .qq-forwarder-state.json
 .qq-forwarder-state.json.tmp
+.qq-forwarder-state.json.lock
+.qq-forwarder.lock
+.qq-forwarder-metrics.json
+.qq-forwarder-metrics.json.lock
+.lark-notifications.jsonl
 .lark-channel-cursors.json
 .lark-channel-cursors.json.tmp
+.lark-channel-cursors.json.lock
+.lark-listener-cursors.json
+.lark-listener-cursors.json.lock
+.lark-listeners.json
+.replay-progress.json
 lark-notifications.jsonl
