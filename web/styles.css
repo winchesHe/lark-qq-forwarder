@@ -589,6 +589,7 @@ h2 {
 .replay-item-content { margin-top: 4px; color: var(--ink); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .replay-item-image { display: inline-block; margin-top: 5px; padding: 3px 7px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; font-size: 11px; }
 
+.test-group-select { width: 100%; margin-top: 16px; padding: 10px 12px; color: var(--ink); background: var(--surface-strong); border: 1px solid var(--line-strong); border-radius: 8px; font: inherit; font-size: 12px; }
 .warning-note {
   display: flex;
   gap: 7px;

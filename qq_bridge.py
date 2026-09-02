@@ -1188,8 +1188,13 @@ async def bind_group(
         await http_client.aclose()
 
 
-async def send_test(state: StateStore) -> None:
-    group_openids = state.active_group_openids()
+async def send_test(state: StateStore, binding_id: Optional[str] = None) -> None:
+    if binding_id:
+        group_openids = [group["group_openid"] for group in state.group_bindings if group.get("binding_id") == binding_id and group.get("status") == "active"]
+        if not group_openids:
+            raise BridgeError("指定 QQ 群不存在或当前不是活跃状态")
+    else:
+        group_openids = state.active_group_openids()
     if not group_openids:
         raise BridgeError("尚未绑定 QQ 群，请先运行 bind")
     api, http_client = await create_api()
@@ -1685,7 +1690,7 @@ async def async_main() -> None:
     elif args.command == "rename":
         await bind_group(state, rename_binding_id=args.binding_id)
     elif args.command == "test":
-        await send_test(state)
+        await send_test(state, binding_id=args.binding_id)
     elif args.command == "run":
         target = await asyncio.to_thread(lark.resolve_target, args.lark_contact)
         await forward_forever(

@@ -34,6 +34,7 @@
     testBadge: document.querySelector("#test-badge"),
     testTitle: document.querySelector("#test-title-copy"),
     testDetail: document.querySelector("#test-detail"),
+    testGroupSelect: document.querySelector("#test-group-select"),
     testButton: document.querySelector("#test-button"),
     primeBadge: document.querySelector("#prime-badge"),
     primeTitle: document.querySelector("#prime-title-copy"),
@@ -325,6 +326,11 @@
     elements.cancelBindButton.disabled = busy || state === "cancelling";
   }
 
+  function runtimeGroups() {
+    const runtime = window.__lastState && window.__lastState.runtime;
+    return runtime && Array.isArray(runtime.qq_groups) ? runtime.qq_groups : [];
+  }
+
   function renderTest(operation, binding, overallState) {
     const state = renderOperationBadge(elements.testBadge, operation, "idle", operationLabels);
     let title = "确认绑定后再测试";
@@ -346,6 +352,19 @@
     setText(elements.testTitle, title);
     setText(elements.testDetail, detail);
     elements.testButton.disabled = busy || state === "running" || binding.state !== "bound" || overallState === "starting" || overallState === "stopping";
+    if (elements.testGroupSelect) {
+      const groups = runtimeGroups();
+      const previous = elements.testGroupSelect.value;
+      elements.testGroupSelect.replaceChildren();
+      groups.filter(group => group.status === "active").forEach(function (group, index) {
+        const option = makeElement("option", "", group.label || `QQ 群 ${index + 1}`);
+        option.value = group.binding_id || "";
+        elements.testGroupSelect.appendChild(option);
+      });
+      if (!elements.testGroupSelect.options.length) elements.testGroupSelect.appendChild(makeElement("option", "", "暂无可测试的 QQ 群"));
+      if (Array.from(elements.testGroupSelect.options).some(option => option.value === previous)) elements.testGroupSelect.value = previous;
+      elements.testGroupSelect.disabled = elements.testButton.disabled || state === "running";
+    }
   }
 
   function renderPrime(operation, overallState) {
@@ -749,7 +768,7 @@
     });
     elements.testButton.addEventListener("click", function () {
       if (window.confirm("这会向真实 QQ 群发送一条测试消息，不是模拟操作。确定继续吗？")) {
-        runAction("/api/actions/test", "主动消息测试");
+        runAction("/api/actions/test", "主动消息测试", { binding_id: elements.testGroupSelect ? elements.testGroupSelect.value : "" });
       }
     });
     elements.primeButton.addEventListener("click", function () { runAction("/api/actions/prime", "默认 prime"); });

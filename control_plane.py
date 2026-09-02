@@ -230,7 +230,10 @@ class ControlPlaneConfig:
                 raise ValueError("群绑定 ID 不能为空")
             return [str(self.python_executable), str(self.bridge_script), "rename", *common, "--binding-id", channel]
         if action == "test":
-            return [str(self.python_executable), str(self.bridge_script), "test", *common]
+            command = [str(self.python_executable), str(self.bridge_script), "test", *common]
+            if channel:
+                command.extend(["--binding-id", channel])
+            return command
         if action == "replay":
             if not isinstance(channel, str) or not channel.strip():
                 raise ValueError("补发频道不能为空")
@@ -1189,7 +1192,7 @@ class ProcessSupervisor:
             ).start()
             return self._status_locked()
 
-    def test(self) -> dict[str, Any]:
+    def test(self, binding_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             self._refresh_processes_locked()
             self._ensure_action_available_locked()
@@ -1197,9 +1200,9 @@ class ProcessSupervisor:
                 operation_name=OP_TEST,
                 role=ROLE_TEST,
                 mode="message",
-                command=self.config.command("test"),
+                command=self.config.command("test", channel=binding_id),
                 requested_event="test_requested",
-                requested_message="已接受 QQ 主动消息测试请求，将向真实 QQ 群发送测试消息",
+                requested_message=("已接受 QQ 主动消息测试请求，将向指定 QQ 群发送测试消息" if binding_id else "已接受 QQ 主动消息测试请求，将向活跃 QQ 群发送测试消息"),
                 start_failure_message="测试进程未能启动，请检查本机 Python 环境后重试",
             )
 
@@ -1839,7 +1842,11 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                     return
                 status = self.server.supervisor.rename_group(binding_id)
             elif path == "/api/actions/test":
-                status = self.server.supervisor.test()
+                binding_id = body.get("binding_id")
+                if binding_id is not None and not isinstance(binding_id, str):
+                    self._error("QQ 群绑定参数无效", status=400)
+                    return
+                status = self.server.supervisor.test(binding_id=binding_id)
             elif path == "/api/actions/replay":
                 channel_name = body.get("channel")
                 message_ids = body.get("message_ids")
