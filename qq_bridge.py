@@ -1194,6 +1194,16 @@ async def process_source_pending_messages(
     pending = pending_messages(messages, cursor)
     forwarded = 0
 
+    async def deliver_to_group(
+        target_group: str, send: Callable[[str], Any]
+    ) -> bool:
+        if has_delivery and has_delivery(target_group, message.message_id):
+            return False
+        await send(target_group)
+        if mark_delivery:
+            mark_delivery(target_group, message.message_id)
+        return True
+
     for message in pending:
         if has_processed(message.message_id):
             advance(message)
@@ -1214,27 +1224,51 @@ async def process_source_pending_messages(
                     image_key=image_key,
                     output_directory=Path(directory),
                 )
-                for target_group in group_openids:
-                    if has_delivery and has_delivery(target_group, message.message_id):
-                        continue
-                    await send_group_image(api, http_client, target_group, image_path)
-                    forwarded += 1
-                    if mark_delivery:
-                        mark_delivery(target_group, message.message_id)
+                results = await asyncio.gather(
+                    *(
+                        deliver_to_group(
+                            target_group,
+                            lambda group: send_group_image(api, http_client, group, image_path),
+                        )
+                        for target_group in group_openids
+                    ),
+                    return_exceptions=True,
+                )
+                failures = [result for result in results if isinstance(result, Exception)]
+                forwarded += sum(result is True for result in results)
+                if failures:
+                    raise failures[0]
             advance(message)
             continue
 
-        for target_group in group_openids:
-            if has_delivery and has_delivery(target_group, message.message_id):
-                continue
-            if message.msg_type == "text":
-                if message.content.strip():
-                    await send_group_text(api, target_group, format_lark_text(source_name, message.content))
-                    forwarded += 1
-            else:
-                logging.info("跳过暂不支持的飞书消息类型：%s", message.msg_type)
-            if mark_delivery:
-                mark_delivery(target_group, message.message_id)
+        if message.msg_type == "text" and message.content.strip():
+            results = await asyncio.gather(
+                *(
+                    deliver_to_group(
+                        target_group,
+                        lambda group: send_group_text(
+                            api, group, format_lark_text(source_name, message.content)
+                        ),
+                    )
+                    for target_group in group_openids
+                ),
+                return_exceptions=True,
+            )
+            failures = [result for result in results if isinstance(result, Exception)]
+            forwarded += sum(result is True for result in results)
+            if failures:
+                raise failures[0]
+        elif message.msg_type != "text":
+            logging.info("跳过暂不支持的飞书消息类型：%s", message.msg_type)
+            for target_group in group_openids:
+                if not has_delivery or not has_delivery(target_group, message.message_id):
+                    if mark_delivery:
+                        mark_delivery(target_group, message.message_id)
+        else:
+            for target_group in group_openids:
+                if not has_delivery or not has_delivery(target_group, message.message_id):
+                    if mark_delivery:
+                        mark_delivery(target_group, message.message_id)
 
         advance(message)
 
