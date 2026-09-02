@@ -5,13 +5,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime
+import fcntl
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,12 +44,151 @@ DEFAULT_LARK_PROFILE = "tenant-105183"
 DEFAULT_LARK_CONTACT = "Perfecto"
 DEFAULT_LISTENERS = PROJECT_DIR / ".lark-listeners.json"
 DEFAULT_LISTENER_CURSORS = PROJECT_DIR / ".lark-listener-cursors.json"
+DEFAULT_PROCESS_LOCK = PROJECT_DIR / ".qq-forwarder.lock"
+DEFAULT_METRICS = PROJECT_DIR / ".qq-forwarder-metrics.json"
 STATE_SCHEMA_VERSION = 3
 IMAGE_KEY_PATTERN = re.compile(r"\b(img_[A-Za-z0-9_-]{10,})\b")
+LARK_COMMAND_TIMEOUT_SECONDS = 30.0
+QQ_REQUEST_TIMEOUT_SECONDS = 30.0
+MAX_SEND_ATTEMPTS = 3
+SOURCE_QUEUE_SIZE = 4
+DEFAULT_POLL_INTERVAL = 0.1
 
 
 class BridgeError(RuntimeError):
     pass
+
+
+async def run_bounded_source_tasks(tasks: list[Any], *, max_workers: int = SOURCE_QUEUE_SIZE) -> None:
+    """用有界队列调度来源任务；单个来源异常不会取消其他来源。"""
+    if not tasks:
+        return
+    worker_count = max(1, min(max_workers, len(tasks)))
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=worker_count)
+
+    async def worker() -> None:
+        while True:
+            task = await queue.get()
+            try:
+                await task
+            except Exception as exc:
+                logging.exception("来源同步任务出现未预期异常，已隔离该来源：%s", exc)
+            finally:
+                queue.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(worker_count)]
+    try:
+        for task in tasks:
+            await queue.put(task)
+        await queue.join()
+    finally:
+        for worker_task in workers:
+            worker_task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+
+class ForwarderProcessLock:
+    """防止多个独立转发进程同时修改同一份游标和发送重复消息。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._handle: Optional[Any] = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.close()
+            raise BridgeError("已有另一个飞书到 QQ 转发进程正在运行") from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()}\n")
+        handle.flush()
+        self._handle = handle
+
+    def release(self) -> None:
+        if self._handle is None:
+            return
+        try:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
+            self._handle = None
+
+    def __enter__(self) -> "ForwarderProcessLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.release()
+
+
+def _save_json_atomically(path: Path, data: dict[str, Any]) -> None:
+    """在进程锁内原子写入状态，避免并发实例互相覆盖游标。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a+") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        with temp_path.open("w", encoding="utf-8") as temp_handle:
+            temp_handle.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            temp_handle.flush()
+            os.fsync(temp_handle.fileno())
+        temp_path.replace(path)
+
+
+class ForwarderMetrics:
+    """保存不含正文和敏感标识的来源级延迟、吞吐和失败摘要。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.data: dict[str, Any] = {
+            "schema_version": 1,
+            "updated_at": None,
+            "sources": {},
+            "recent_syncs": [],
+        }
+
+    def record_sync(
+        self,
+        source: str,
+        *,
+        pending: int,
+        forwarded: int,
+        elapsed_ms: float,
+        success: bool,
+        error_class: Optional[str] = None,
+    ) -> None:
+        now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        summary = self.data["sources"].setdefault(
+            source,
+            {"sync_count": 0, "success_count": 0, "failure_count": 0, "forwarded_count": 0, "last_pending": 0, "last_elapsed_ms": 0.0},
+        )
+        summary["sync_count"] += 1
+        summary["success_count" if success else "failure_count"] += 1
+        summary["forwarded_count"] += forwarded
+        summary["last_pending"] = pending
+        summary["last_elapsed_ms"] = round(elapsed_ms, 3)
+        event = {
+            "source": source,
+            "at": now,
+            "pending": pending,
+            "forwarded": forwarded,
+            "elapsed_ms": round(elapsed_ms, 3),
+            "success": success,
+        }
+        if error_class:
+            event["error_class"] = error_class
+        recent = self.data["recent_syncs"]
+        recent.append(event)
+        self.data["recent_syncs"] = recent[-200:]
+        self.data["updated_at"] = now
+        try:
+            _save_json_atomically(self.path, self.data)
+        except OSError:
+            logging.warning("转发指标写入失败，不影响消息转发：%s", self.path)
 
 
 def read_client_secret() -> str:
@@ -325,13 +467,7 @@ class StateStore:
         return isinstance(recent, list) and message_id in recent
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp_path.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temp_path.replace(self.path)
+        _save_json_atomically(self.path, self.data)
 
 
 def _valid_channel_position(value: Any) -> bool:
@@ -380,10 +516,7 @@ class ListenerCursorStore:
         self.save()
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temp.replace(self.path)
+        _save_json_atomically(self.path, self.data)
 
 
 @dataclass(frozen=True)
@@ -491,13 +624,7 @@ class ChannelCursorStore:
         raise BridgeError("指定频道未在游标配置中初始化")
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp_path.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temp_path.replace(self.path)
+        _save_json_atomically(self.path, self.data)
 
 
 @dataclass(frozen=True)
@@ -657,7 +784,10 @@ class LarkClient:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=LARK_COMMAND_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise BridgeError("飞书 CLI 请求超时") from exc
         except OSError as exc:
             raise BridgeError("无法启动 lark-cli") from exc
         try:
@@ -734,6 +864,46 @@ class LarkClient:
         )
         return extract_lark_messages(payload)
 
+    @staticmethod
+    def _pagination(payload: Any) -> tuple[bool, Optional[str]]:
+        """兼容 lark-cli 顶层和 meta.pagination 两种分页返回结构。"""
+        candidates = [payload]
+        if isinstance(payload, dict):
+            candidates.append(payload.get("meta"))
+            candidates.append(payload.get("data"))
+        for value in candidates:
+            if not isinstance(value, dict):
+                continue
+            pagination = value.get("pagination") if isinstance(value.get("pagination"), dict) else value
+            has_more = pagination.get("has_more")
+            token = pagination.get("page_token") or pagination.get("next_token")
+            if isinstance(has_more, bool):
+                return has_more, token if isinstance(token, str) and token else None
+        return False, None
+
+    def list_messages_since(self, chat_id: str, cursor: int) -> list[LarkMessage]:
+        """按分页游标倒序读取，读到本地高水位后立即停止。"""
+        messages: list[LarkMessage] = []
+        page_token: Optional[str] = None
+        for _ in range(1000):
+            arguments = [
+                "im", "+chat-messages-list", "--chat-id", chat_id,
+                "--order", "desc", "--page-size", "50",
+                "--no-reactions", "--as", "user", "--format", "json",
+            ]
+            if page_token:
+                arguments.extend(["--page-token", page_token])
+            payload = self._run(arguments)
+            page_messages = extract_lark_messages(payload)
+            messages.extend(page_messages)
+            if any(item.position <= cursor for item in page_messages):
+                break
+            has_more, next_token = self._pagination(payload)
+            if not has_more or not next_token or next_token == page_token:
+                break
+            page_token = next_token
+        return messages
+
     def download_image(
         self,
         *,
@@ -787,11 +957,32 @@ class GatewaySession:
 
 
 async def create_api() -> tuple[QQApiClient, httpx.AsyncClient]:
-    client = httpx.AsyncClient()
+    client = httpx.AsyncClient(timeout=QQ_REQUEST_TIMEOUT_SECONDS)
     api = QQApiClient(app_id=APP_ID, client_secret=read_client_secret())
     api.setup(client)
     await api.ensure_token()
     return api, client
+
+
+async def _retry_send(action: Callable[[], Any], *, description: str) -> Any:
+    """对网络型发送做有限重试，避免瞬时故障直接拖垮整个转发进程。"""
+    delay = 0.5
+    for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
+        try:
+            return await action()
+        except BridgeError:
+            if attempt >= MAX_SEND_ATTEMPTS:
+                raise
+            logging.warning(
+                "%s失败，将在 %.1f 秒后重试（%d/%d）",
+                description,
+                delay,
+                attempt,
+                MAX_SEND_ATTEMPTS - 1,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+    raise BridgeError(f"{description}失败")
 
 
 async def send_group_text(
@@ -801,19 +992,24 @@ async def send_group_text(
     *,
     reply_to: Optional[str] = None,
 ) -> dict[str, Any]:
-    try:
-        response = await api.send_text(
-            "group",
-            group_openid,
-            content,
-            reply_to=reply_to,
-            markdown=False,
-        )
-    except RuntimeError as exc:
-        raise BridgeError(f"QQ 消息发送失败，请检查目标群是否允许机器人主动发言：{exc}") from exc
-    if not response.get("id"):
-        raise BridgeError("QQ API 未返回消息 ID，无法确认消息已发送")
-    return response
+    async def send_once() -> dict[str, Any]:
+        try:
+            response = await api.send_text(
+                "group",
+                group_openid,
+                content,
+                reply_to=reply_to,
+                markdown=False,
+            )
+        except Exception as exc:
+            raise BridgeError(
+                f"QQ 消息发送失败，请检查目标群是否允许机器人主动发言：{exc}"
+            ) from exc
+        if not response.get("id"):
+            raise BridgeError("QQ API 未返回消息 ID，无法确认消息已发送")
+        return response
+
+    return await _retry_send(send_once, description="QQ 文本消息发送")
 
 
 async def send_group_image(
@@ -822,30 +1018,35 @@ async def send_group_image(
     group_openid: str,
     image_path: Path,
 ) -> dict[str, Any]:
-    try:
-        uploader = MediaUploader(api, http_client, log_tag="LarkQQForwarder")
-        file_info = await uploader.upload(
-            "group",
-            group_openid,
-            str(image_path),
-            MEDIA_TYPE_IMAGE,
-            file_name="lark-image.jpg",
-        )
-        if not file_info:
-            raise BridgeError("QQ 图片上传未返回 file_info")
-        response = await api.post_group_message(
-            group_openid,
-            MessageToCreate(
-                msg_type=QQMessageType.RICH_MEDIA,
-                msg_seq=api.next_msg_seq(),
-                media=MediaInfo(file_info=file_info),
-            ),
-        )
-    except Exception as exc:
-        raise BridgeError(f"QQ 图片上传或发送失败：{exc}") from exc
-    if not response.get("id"):
-        raise BridgeError("QQ 图片发送未返回消息 ID")
-    return response
+    async def send_once() -> dict[str, Any]:
+        try:
+            uploader = MediaUploader(api, http_client, log_tag="LarkQQForwarder")
+            file_info = await uploader.upload(
+                "group",
+                group_openid,
+                str(image_path),
+                MEDIA_TYPE_IMAGE,
+                file_name="lark-image.jpg",
+            )
+            if not file_info:
+                raise BridgeError("QQ 图片上传未返回 file_info")
+            response = await api.post_group_message(
+                group_openid,
+                MessageToCreate(
+                    msg_type=QQMessageType.RICH_MEDIA,
+                    msg_seq=api.next_msg_seq(),
+                    media=MediaInfo(file_info=file_info),
+                ),
+            )
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(f"QQ 图片上传或发送失败：{exc}") from exc
+        if not response.get("id"):
+            raise BridgeError("QQ 图片发送未返回消息 ID")
+        return response
+
+    return await _retry_send(send_once, description="QQ 图片上传或发送")
 
 
 async def bind_group(
@@ -963,7 +1164,11 @@ async def process_source_pending_messages(
     group_openids = [group_openid] if isinstance(group_openid, str) else list(group_openid)
     if not group_openids:
         raise BridgeError("没有可用的 QQ 群绑定")
-    messages = await asyncio.to_thread(lark.list_messages, source_chat_id)
+    list_since = getattr(lark, "list_messages_since", None)
+    if callable(list_since):
+        messages = await asyncio.to_thread(list_since, source_chat_id, cursor)
+    else:
+        messages = await asyncio.to_thread(lark.list_messages, source_chat_id)
     pending = pending_messages(messages, cursor)
     forwarded = 0
 
@@ -975,25 +1180,34 @@ async def process_source_pending_messages(
             advance(message)
             continue
 
+        # 图片只需从飞书下载一次；QQ 的 file_info 仍按目标群分别上传。
+        if message.msg_type == "image":
+            image_key = extract_image_key(message.content)
+            if not image_key:
+                raise BridgeError("飞书图片消息缺少 image_key")
+            with tempfile.TemporaryDirectory(prefix="lark-qq-image-") as directory:
+                image_path = await asyncio.to_thread(
+                    lark.download_image,
+                    message_id=message.message_id,
+                    image_key=image_key,
+                    output_directory=Path(directory),
+                )
+                for target_group in group_openids:
+                    if has_delivery and has_delivery(target_group, message.message_id):
+                        continue
+                    await send_group_image(api, http_client, target_group, image_path)
+                    forwarded += 1
+                    if mark_delivery:
+                        mark_delivery(target_group, message.message_id)
+            advance(message)
+            continue
+
         for target_group in group_openids:
             if has_delivery and has_delivery(target_group, message.message_id):
                 continue
             if message.msg_type == "text":
                 if message.content.strip():
                     await send_group_text(api, target_group, format_lark_text(source_name, message.content))
-                    forwarded += 1
-            elif message.msg_type == "image":
-                image_key = extract_image_key(message.content)
-                if not image_key:
-                    raise BridgeError("飞书图片消息缺少 image_key")
-                with tempfile.TemporaryDirectory(prefix="lark-qq-image-") as directory:
-                    image_path = await asyncio.to_thread(
-                        lark.download_image,
-                        message_id=message.message_id,
-                        image_key=image_key,
-                        output_directory=Path(directory),
-                    )
-                    await send_group_image(api, http_client, target_group, image_path)
                     forwarded += 1
             else:
                 logging.info("跳过暂不支持的飞书消息类型：%s", message.msg_type)
@@ -1076,17 +1290,18 @@ async def process_channel_pending_messages(
     )
 
 
-async def forward_forever(
+async def _forward_forever_impl(
     state: StateStore,
     input_path: Path,
     *,
     lark: LarkClient,
     target: LarkTarget,
     contact_name: str,
-    poll_interval: float = 0.25,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
     channel_state_path: Path = DEFAULT_CHANNEL_STATE,
     listeners_path: Path = DEFAULT_LISTENERS,
     listener_cursors_path: Path = DEFAULT_LISTENER_CURSORS,
+    metrics_path: Path = DEFAULT_METRICS,
 ) -> None:
     group_openids = state.active_group_openids()
     if not group_openids:
@@ -1121,12 +1336,52 @@ async def forward_forever(
     channel_cursors = ChannelCursorStore.load(channel_state_path)
     offset = state.prime_input(input_path)
     api, http_client = await create_api()
+    metrics = ForwarderMetrics(metrics_path)
     print(
         "飞书 → QQ 转发已启动；自动来源：Perfecto 和 "
         f"{len(channel_cursors.names())} 个频道；通知仅作唤醒。"
     )
 
     try:
+        last_fallback_sync = time.monotonic()
+
+        async def fallback_sync() -> None:
+            """通知缺失时低频巡检所有来源，避免依赖 macOS 通知不丢消息。"""
+            nonlocal last_fallback_sync
+            for name, target_for_listener in extra_targets.items():
+                try:
+                    await process_source_pending_messages(
+                        source_name=target_for_listener.name,
+                        source_chat_id=target_for_listener.chat_id,
+                        source_sender_id=target_for_listener.sender_id,
+                        cursor=listener_store.cursor(name),
+                        lark=lark, api=api, http_client=http_client,
+                        group_openid=group_openids,
+                        has_processed=lambda message_id, listener=name: listener_store.has_processed(listener, message_id),
+                        advance=lambda message, listener=name: listener_store.advance(listener, message),
+                        has_delivery=lambda group, message_id, listener=name: state.has_delivery(listener, group, message_id),
+                        mark_delivery=lambda group, message_id, listener=name: state.mark_delivery(listener, group, message_id),
+                    )
+                except BridgeError as exc:
+                    logging.error("兜底同步 %s 失败：%s", name, exc)
+            for channel_name in channel_cursors.names():
+                try:
+                    await process_channel_pending_messages(
+                        state=state, cursors=channel_cursors, channel_name=channel_name,
+                        lark=lark, api=api, http_client=http_client,
+                        group_openid=group_openids,
+                    )
+                except BridgeError as exc:
+                    logging.error("兜底同步 %s 失败：%s", channel_name, exc)
+            try:
+                await process_pending_messages(
+                    state=state, lark=lark, target=target, api=api,
+                    http_client=http_client, group_openid=group_openids,
+                )
+            except BridgeError as exc:
+                logging.error("兜底同步 Perfecto 失败：%s", exc)
+            last_fallback_sync = time.monotonic()
+
         # 启动时先补扫新增监听人员的未处理消息，避免通知在旧进程中被消费后永久丢失。
         for name, target_for_listener in extra_targets.items():
             await process_source_pending_messages(
@@ -1144,9 +1399,66 @@ async def forward_forever(
                 mark_delivery=lambda group, message_id, listener=name: state.mark_delivery(listener, group, message_id),
             )
 
+        source_semaphore = asyncio.Semaphore(4)
+
+        async def sync_perfecto() -> None:
+            started = time.perf_counter()
+            pending_count = forwarded_count = 0
+            try:
+                async with source_semaphore:
+                    pending_count, forwarded_count = await process_pending_messages(
+                        state=state, lark=lark, target=target, api=api,
+                        http_client=http_client, group_openid=group_openids,
+                    )
+                print(f"Perfecto API 检查完成：未处理 {pending_count} 条，已转发 {forwarded_count} 条。")
+                metrics.record_sync("Perfecto", pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=True)
+            except BridgeError as exc:
+                metrics.record_sync("Perfecto", pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=False, error_class=type(exc).__name__)
+                logging.error("Perfecto 转发失败，本次唤醒稍后由兜底同步重试：%s", exc)
+
+        async def sync_listener(name: str, target_for_listener: LarkTarget) -> None:
+            started = time.perf_counter()
+            pending_count = forwarded_count = 0
+            try:
+                async with source_semaphore:
+                    pending_count, forwarded_count = await process_source_pending_messages(
+                        source_name=target_for_listener.name,
+                        source_chat_id=target_for_listener.chat_id,
+                        source_sender_id=target_for_listener.sender_id,
+                        cursor=listener_store.cursor(name), lark=lark, api=api,
+                        http_client=http_client, group_openid=group_openids,
+                        has_processed=lambda message_id, listener=name: listener_store.has_processed(listener, message_id),
+                        advance=lambda message, listener=name: listener_store.advance(listener, message),
+                        has_delivery=lambda group, message_id, listener=name: state.has_delivery(listener, group, message_id),
+                        mark_delivery=lambda group, message_id, listener=name: state.mark_delivery(listener, group, message_id),
+                    )
+                print(f"{name} API 检查完成：未处理 {pending_count} 条，已转发 {forwarded_count} 条。")
+                metrics.record_sync(name, pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=True)
+            except BridgeError as exc:
+                metrics.record_sync(name, pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=False, error_class=type(exc).__name__)
+                logging.error("%s 转发失败，本次唤醒稍后由兜底同步重试：%s", name, exc)
+
+        async def sync_channel(channel_name: str) -> None:
+            started = time.perf_counter()
+            pending_count = forwarded_count = 0
+            try:
+                async with source_semaphore:
+                    pending_count, forwarded_count = await process_channel_pending_messages(
+                        state=state, cursors=channel_cursors, channel_name=channel_name,
+                        lark=lark, api=api, http_client=http_client,
+                        group_openid=group_openids,
+                    )
+                print(f"{channel_name} API 检查完成：未处理 {pending_count} 条，已转发 {forwarded_count} 条。")
+                metrics.record_sync(channel_name, pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=True)
+            except BridgeError as exc:
+                metrics.record_sync(channel_name, pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=False, error_class=type(exc).__name__)
+                logging.error("%s 转发失败，本次唤醒稍后由兜底同步重试：%s", channel_name, exc)
+
         while True:
             record = read_next_record(input_path, offset)
             if record is None:
+                if time.monotonic() - last_fallback_sync >= 30.0:
+                    await fallback_sync()
                 await asyncio.sleep(poll_interval)
                 continue
 
@@ -1156,61 +1468,28 @@ async def forward_forever(
                 state.advance_input(offset)
                 print("跳过一行无法解析的通知唤醒记录。")
                 continue
+            tasks: list[Any] = []
             if notification_matches_contact(payload, contact_name):
-                pending_count, forwarded_count = await process_pending_messages(
-                    state=state,
-                    lark=lark,
-                    target=target,
-                    api=api,
-                    http_client=http_client,
-                    group_openid=group_openids,
-                )
-                print(
-                    f"Perfecto API 检查完成：未处理 {pending_count} 条，"
-                    f"已转发 {forwarded_count} 条。"
-                )
-
+                tasks.append(sync_perfecto())
             for name, target_for_listener in extra_targets.items():
-                if not notification_matches_contact(payload, name):
-                    continue
-                pending_count, forwarded_count = await process_source_pending_messages(
-                    source_name=target_for_listener.name,
-                    source_chat_id=target_for_listener.chat_id,
-                    source_sender_id=target_for_listener.sender_id,
-                    cursor=listener_store.cursor(name),
-                    lark=lark,
-                    api=api,
-                    http_client=http_client,
-                    group_openid=group_openids,
-                    has_processed=lambda message_id, listener=name: listener_store.has_processed(listener, message_id),
-                    advance=lambda message, listener=name: listener_store.advance(listener, message),
-                    has_delivery=lambda group, message_id, listener=name: state.has_delivery(listener, group, message_id),
-                    mark_delivery=lambda group, message_id, listener=name: state.mark_delivery(listener, group, message_id),
-                )
-                print(f"{name} API 检查完成：未处理 {pending_count} 条，已转发 {forwarded_count} 条。")
-
+                if notification_matches_contact(payload, name):
+                    tasks.append(sync_listener(name, target_for_listener))
             for channel_name in channel_cursors.names():
-                if not notification_matches_contact(payload, channel_name):
-                    continue
-                pending_count, forwarded_count = (
-                    await process_channel_pending_messages(
-                        state=state,
-                        cursors=channel_cursors,
-                        channel_name=channel_name,
-                        lark=lark,
-                        api=api,
-                        http_client=http_client,
-                        group_openid=group_openids,
-                    )
-                )
-                print(
-                    f"{channel_name} API 检查完成：未处理 {pending_count} 条，"
-                    f"已转发 {forwarded_count} 条。"
-                )
+                if notification_matches_contact(payload, channel_name):
+                    tasks.append(sync_channel(channel_name))
+            if tasks:
+                await run_bounded_source_tasks(tasks, max_workers=SOURCE_QUEUE_SIZE)
             offset = record.next_offset
             state.advance_input(offset)
     finally:
         await http_client.aclose()
+
+
+async def forward_forever(*args: Any, **kwargs: Any) -> None:
+    """在独占进程锁内运行转发器，避免独立会话并发发送和写游标。"""
+    lock_path = kwargs.pop("process_lock_path", DEFAULT_PROCESS_LOCK)
+    with ForwarderProcessLock(Path(lock_path)):
+        await _forward_forever_impl(*args, **kwargs)
 
 
 async def check_connections(lark: LarkClient, contact_name: str) -> None:

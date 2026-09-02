@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -6,8 +7,10 @@ from unittest.mock import AsyncMock, patch
 
 from qq_bridge import (
     BridgeError,
+    ForwarderProcessLock,
     ChannelCursorStore,
     LarkMessage,
+    LarkClient,
     LarkTarget,
     StateStore,
     extract_image_key,
@@ -18,6 +21,8 @@ from qq_bridge import (
     pending_messages,
     process_pending_messages,
     read_next_record,
+    run_bounded_source_tasks,
+    send_group_text,
 )
 
 
@@ -229,6 +234,33 @@ class LarkMessageTests(unittest.TestCase):
         formatted = format_lark_text("Perfecto", "后台文本\n")
         self.assertRegex(formatted, r"^【飞书·Perfecto】 20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n后台文本$")
         self.assertEqual(format_lark_text("Perfecto", "2026-09-02 10:15:53 已有时间"), "2026-09-02 10:15:53 已有时间")
+
+    def test_incremental_pagination_stops_at_local_cursor(self) -> None:
+        client = LarkClient(profile="fixture")
+        calls: list[list[str]] = []
+        payloads = [
+            {
+                "data": {"items": [{"message_id": "m12", "message_position": "12", "msg_type": "text", "content": "新", "sender": {"id": "s"}}]},
+                "has_more": True,
+                "page_token": "next-page",
+            },
+            {
+                "data": {"items": [{"message_id": "m10", "message_position": "10", "msg_type": "text", "content": "旧", "sender": {"id": "s"}}]},
+                "has_more": True,
+                "page_token": "ignored",
+            },
+        ]
+
+        def fake_run(arguments: list[str], **_kwargs: object) -> object:
+            calls.append(arguments)
+            return payloads.pop(0)
+
+        client._run = fake_run  # type: ignore[method-assign]
+        messages = client.list_messages_since("chat", 10)
+        self.assertEqual([message.message_id for message in messages], ["m12", "m10"])
+        self.assertIn("--page-token", calls[1])
+        self.assertIn("next-page", calls[1])
+        self.assertEqual(len(calls), 2)
 
 
 class FakeLarkClient:
@@ -447,6 +479,41 @@ class ForwardingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state.has_delivery("Perfecto", "group-a", "message-11"))
             self.assertFalse(state.has_delivery("Perfecto", "group-b", "message-11"))
 
+    async def test_image_is_downloaded_once_for_multiple_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = StateStore.load(root / "state.json")
+            state.prime_lark(chat_id="chat-a", sender_id="perfecto", latest_position=10)
+
+            class ImageLarkClient(FakeLarkClient):
+                def __init__(self) -> None:
+                    super().__init__([LarkMessage("image-11", 11, "image", "perfecto", "img_fixture_1234567890")])
+                    self.download_count = 0
+
+                def download_image(self, *, message_id: str, image_key: str, output_directory: Path) -> Path:
+                    del message_id, image_key
+                    self.download_count += 1
+                    path = output_directory / "fixture.jpg"
+                    path.write_bytes(b"image")
+                    return path
+
+            lark = ImageLarkClient()
+            sender = AsyncMock(return_value={"id": "qq-image"})
+            with patch("qq_bridge.send_group_image", new=sender):
+                result = await process_pending_messages(
+                    state=state,
+                    lark=lark,
+                    target=LarkTarget("Perfecto", "perfecto", "chat-a"),
+                    api=object(),
+                    http_client=object(),
+                    group_openid=["group-a", "group-b"],
+                )
+
+            self.assertEqual(result, (1, 2))
+            self.assertEqual(lark.download_count, 1)
+            self.assertEqual(sender.await_count, 2)
+            self.assertEqual(state.message_position, 11)
+
     async def test_replayed_trigger_has_no_pending_messages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = StateStore.load(Path(directory) / "state.json")
@@ -480,6 +547,46 @@ class ForwardingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(second, (0, 0))
             self.assertEqual(sender.await_count, 1)
+
+
+class ProcessLockTests(unittest.TestCase):
+    def test_process_lock_rejects_second_holder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "forwarder.lock"
+            first = ForwarderProcessLock(path)
+            second = ForwarderProcessLock(path)
+            first.acquire()
+            try:
+                with self.assertRaises(BridgeError):
+                    second.acquire()
+            finally:
+                first.release()
+
+
+class RetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_text_send_retries_transient_failure(self) -> None:
+        api = type("Api", (), {})()
+        api.send_text = AsyncMock(side_effect=[RuntimeError("temporary"), {"id": "qq-1"}])
+        with patch("qq_bridge.asyncio.sleep", new=AsyncMock()):
+            response = await send_group_text(api, "group", "内容")
+        self.assertEqual(response["id"], "qq-1")
+        self.assertEqual(api.send_text.await_count, 2)
+
+    async def test_bounded_source_tasks_isolate_one_failure(self) -> None:
+        completed: list[str] = []
+
+        async def succeed(name: str) -> None:
+            await asyncio.sleep(0)
+            completed.append(name)
+
+        async def fail() -> None:
+            raise BridgeError("source failed")
+
+        await run_bounded_source_tasks(
+            [succeed("a"), fail(), succeed("b"), succeed("c"), succeed("d")],
+            max_workers=2,
+        )
+        self.assertEqual(set(completed), {"a", "b", "c", "d"})
 
 
 if __name__ == "__main__":

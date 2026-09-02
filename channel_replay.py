@@ -16,6 +16,8 @@ from typing import Optional
 from qq_bridge import (
     BridgeError,
     ChannelCursorStore,
+    DEFAULT_PROCESS_LOCK,
+    ForwarderProcessLock,
     LarkClient,
     StateStore,
     create_api,
@@ -46,7 +48,11 @@ async def preview_channel(*, channel_name: str, channel_state_path: Path, lark_p
     cursors = ChannelCursorStore.load(channel_state_path)
     channel = cursors.get(channel_name)
     lark = lark_client or LarkClient(profile=lark_profile)
-    messages = await asyncio.to_thread(lark.list_messages, channel.chat_id)
+    list_since = getattr(lark, "list_messages_since", None)
+    if callable(list_since):
+        messages = await asyncio.to_thread(list_since, channel.chat_id, channel.cursor_position)
+    else:
+        messages = await asyncio.to_thread(lark.list_messages, channel.chat_id)
     pending = pending_messages(messages, channel.cursor_position)
     return [
         {"message_id": item.message_id, "position": item.position, "type": item.msg_type,
@@ -57,7 +63,7 @@ async def preview_channel(*, channel_name: str, channel_state_path: Path, lark_p
     ]
 
 
-async def replay_channel(
+async def _replay_channel_impl(
     *,
     channel_name: str,
     channel_state_path: Path,
@@ -75,7 +81,11 @@ async def replay_channel(
     cursors = ChannelCursorStore.load(channel_state_path)
     channel = cursors.get(channel_name)
     lark = lark_client or LarkClient(profile=lark_profile)
-    messages = await asyncio.to_thread(lark.list_messages, channel.chat_id)
+    list_since = getattr(lark, "list_messages_since", None)
+    if callable(list_since):
+        messages = await asyncio.to_thread(list_since, channel.chat_id, channel.cursor_position)
+    else:
+        messages = await asyncio.to_thread(lark.list_messages, channel.chat_id)
     pending = pending_messages(messages, channel.cursor_position)
     if message_ids is not None:
         pending = [message for message in pending if message.message_id in message_ids]
@@ -153,6 +163,30 @@ async def replay_channel(
         skipped_count=skipped,
         cursor_position=cursors.get(channel.name).cursor_position,
     )
+
+
+async def replay_channel(
+    *,
+    channel_name: str,
+    channel_state_path: Path,
+    state_path: Path,
+    lark_profile: str = DEFAULT_LARK_PROFILE,
+    lark_client: Optional[LarkClient] = None,
+    message_ids: Optional[set[str]] = None,
+    progress_path: Optional[Path] = None,
+    process_lock_path: Path = DEFAULT_PROCESS_LOCK,
+) -> ReplaySummary:
+    """频道补发与自动转发共享独占锁，避免并发修改游标或重复发送。"""
+    with ForwarderProcessLock(process_lock_path):
+        return await _replay_channel_impl(
+            channel_name=channel_name,
+            channel_state_path=channel_state_path,
+            state_path=state_path,
+            lark_profile=lark_profile,
+            lark_client=lark_client,
+            message_ids=message_ids,
+            progress_path=progress_path,
+        )
 
 
 def parse_args() -> argparse.Namespace:
