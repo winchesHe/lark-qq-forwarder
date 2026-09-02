@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import collections
 import datetime as dt
 import hmac
@@ -23,13 +24,14 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
 LOCAL_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 EVENT_LIMIT = 80
+LISTENER_FILE_NAME = ".lark-listeners.json"
 
 ROLE_PROBE = "notification_probe"
 ROLE_FORWARDER = "forwarder"
@@ -79,6 +81,35 @@ class ControlPlaneError(RuntimeError):
     """控制面可以安全展示给 UI 的错误。"""
 
 
+class ListenerStore:
+    """保存可由通知唤醒的飞书监听人员名称。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def names(self) -> list[str]:
+        if not self.path.exists():
+            return ["Perfecto"]
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return ["Perfecto"]
+        values = data.get("listeners") if isinstance(data, dict) else None
+        names = [value.strip() for value in values if isinstance(value, str) and value.strip()] if isinstance(values, list) else []
+        return list(dict.fromkeys(names)) or ["Perfecto"]
+
+    def add(self, name: str) -> list[str]:
+        name = name.strip()
+        if not name or len(name) > 80:
+            raise ControlPlaneError("监听人员名称不能为空且不能超过 80 个字符")
+        names = self.names()
+        if name.casefold() in {value.casefold() for value in names}:
+            raise ControlPlaneError("该监听人员已存在")
+        names.append(name)
+        self.path.write_text(json.dumps({"listeners": names}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return names
+
+
 class ActionConflict(ControlPlaneError):
     """当前状态不允许执行该动作。"""
 
@@ -115,12 +146,15 @@ class ControlPlaneConfig:
     input_path: Path
     state_path: Path
     channel_state_path: Path
+    listener_path: Optional[Path] = None
     profile: str = "tenant-105183"
     contact: str = "Perfecto"
     host: str = LOCAL_HOST
     port: int = DEFAULT_PORT
 
     def __post_init__(self) -> None:
+        if self.listener_path is None:
+            object.__setattr__(self, "listener_path", self.project_dir / LISTENER_FILE_NAME)
         if self.host != LOCAL_HOST:
             raise ValueError("控制面只能监听 127.0.0.1")
         if not 0 <= self.port <= 65535:
@@ -152,6 +186,7 @@ class ControlPlaneConfig:
             input_path=project_dir / "lark-notifications.jsonl",
             state_path=project_dir / ".qq-forwarder-state.json",
             channel_state_path=project_dir / ".lark-channel-cursors.json",
+            listener_path=project_dir / LISTENER_FILE_NAME,
             port=port,
         )
 
@@ -160,8 +195,10 @@ class ControlPlaneConfig:
         action: str,
         *,
         rebind: bool = False,
+        keep_existing: bool = False,
         force_end: bool = False,
         channel: Optional[str] = None,
+        message_ids: Optional[list[str]] = None,
     ) -> list[str]:
         common = [
             "--input",
@@ -182,13 +219,15 @@ class ControlPlaneConfig:
             command = [str(self.python_executable), str(self.bridge_script), "bind", *common]
             if rebind:
                 command.append("--rebind")
+            if keep_existing:
+                command.append("--add")
             return command
         if action == "test":
             return [str(self.python_executable), str(self.bridge_script), "test", *common]
         if action == "replay":
             if not isinstance(channel, str) or not channel.strip():
                 raise ValueError("补发频道不能为空")
-            return [
+            command = [
                 str(self.python_executable),
                 str(self.replay_script),
                 "--channel",
@@ -200,6 +239,11 @@ class ControlPlaneConfig:
                 "--lark-profile",
                 self.profile,
             ]
+            if message_ids:
+                for message_id in message_ids:
+                    command.extend(["--message-id", message_id])
+            command.extend(["--progress-path", str(self.state_path.with_name(".replay-progress.json"))])
+            return command
         if action == "run":
             return [
                 str(self.python_executable),
@@ -208,6 +252,10 @@ class ControlPlaneConfig:
                 *common,
                 "--channel-state",
                 str(self.channel_state_path),
+                "--listeners-file",
+                str(self.listener_path),
+                "--listener-cursors",
+                str(self.state_path.with_name(".lark-listener-cursors.json")),
             ]
         if action == "check":
             return [str(self.python_executable), str(self.bridge_script), "check", *common]
@@ -264,6 +312,7 @@ def _state_summary(path: Path) -> dict[str, Any]:
         }
 
     group_openid = data.get("group_openid")
+    groups = data.get("qq_groups", [])
     chat_id = data.get("lark_chat_id")
     sender_id = data.get("lark_sender_id")
     position = data.get("lark_message_position")
@@ -272,6 +321,11 @@ def _state_summary(path: Path) -> dict[str, Any]:
         "state_file_available": True,
         "state_file_valid": True,
         "qq_group_bound": isinstance(group_openid, str) and bool(group_openid),
+        "qq_group_count": len(groups) if isinstance(groups, list) else (1 if group_openid else 0),
+        "qq_groups": [
+            {"label": group.get("label", "QQ 群"), "status": group.get("status", "unknown"), "verification_state": group.get("verification_state", "unknown")}
+            for group in groups if isinstance(group, dict) and isinstance(group.get("group_openid"), str)
+        ] if isinstance(groups, list) else [],
         "lark_session_initialized": (
             isinstance(chat_id, str)
             and bool(chat_id)
@@ -353,6 +407,7 @@ class ProcessSupervisor:
         self._clock = clock
         self._lock = threading.RLock()
         self._server_port = config.port
+        self._listener_store = ListenerStore(config.listener_path)
         self._records: dict[str, ProcessRecord] = {}
         self._operation_records: dict[str, ProcessRecord] = {}
         self._operation_threads: dict[str, threading.Thread] = {}
@@ -696,6 +751,15 @@ class ProcessSupervisor:
         prime = self._operation_snapshot_locked(OP_PRIME)
         replay = self._operation_snapshot_locked(OP_REPLAY)
         channel_replay = _channel_config_summary(self.config.channel_state_path)
+        progress_path = self.config.state_path.with_name(".replay-progress.json")
+        replay_progress: dict[str, Any] = {}
+        if progress_path.exists():
+            try:
+                value = json.loads(progress_path.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    replay_progress = value
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                replay_progress = {}
         ready_channel_count = sum(
             channel["state"] == "ready" for channel in channel_replay["channels"]
         )
@@ -737,6 +801,8 @@ class ProcessSupervisor:
             "prime": prime,
             "replay": replay,
             "channel_replay": channel_replay,
+            "replay_progress": replay_progress,
+            "listeners": self._listener_store.names(),
             "recovery": self._recovery_snapshot_locked(overall_state, runtime),
             "events": list(self._events),
         }
@@ -745,6 +811,16 @@ class ProcessSupervisor:
         with self._lock:
             self._refresh_processes_locked()
             return self._status_locked()
+
+    def listeners(self) -> list[str]:
+        with self._lock:
+            return self._listener_store.names()
+
+    def add_listener(self, name: str) -> list[str]:
+        with self._lock:
+            names = self._listener_store.add(name)
+            self._record_event_locked("listener_added", f"已新增监听人员：{name.strip()}")
+            return names
 
     def set_server_port(self, port: int) -> None:
         with self._lock:
@@ -974,6 +1050,7 @@ class ProcessSupervisor:
         self,
         *,
         rebind: bool = False,
+        keep_existing: bool = False,
         confirmed: bool = False,
     ) -> dict[str, Any]:
         if rebind and not confirmed:
@@ -981,19 +1058,21 @@ class ProcessSupervisor:
         with self._lock:
             self._refresh_processes_locked()
             self._sync_binding_state_locked()
-            if not rebind and self._operations[OP_BINDING]["state"] == "bound":
+            if not rebind and not keep_existing and self._operations[OP_BINDING]["state"] == "bound":
                 self._record_event_locked("bind_skipped", "当前 QQ 群已经绑定")
                 return self._status_locked()
             self._ensure_action_available_locked(requires_stopped=True)
-            mode = "rebind" if rebind else "bind"
+            mode = "add" if keep_existing else ("rebind" if rebind else "bind")
             return self._start_operation_locked(
                 operation_name=OP_BINDING,
                 role=ROLE_BIND,
                 mode=mode,
-                command=self.config.command("bind", rebind=rebind),
+                command=self.config.command("bind", rebind=rebind, keep_existing=keep_existing),
                 requested_event="bind_requested",
                 requested_message=(
-                    "已接受重新绑定请求；请在目标 QQ 群发送 @qclaw 绑定测试"
+                    "已接受新增群绑定请求；请在目标 QQ 群发送 @qclaw 绑定测试"
+                    if keep_existing
+                    else "已接受重新绑定请求；请在目标 QQ 群发送 @qclaw 绑定测试"
                     if rebind
                     else "已接受绑定请求；请在目标 QQ 群发送 @qclaw 绑定测试"
                 ),
@@ -1059,7 +1138,7 @@ class ProcessSupervisor:
                 start_failure_message="prime 进程未能启动，请检查本机 Python 环境后重试",
             )
 
-    def replay(self, channel_name: str) -> dict[str, Any]:
+    def replay(self, channel_name: str, message_ids: Optional[list[str]] = None) -> dict[str, Any]:
         if not isinstance(channel_name, str) or not channel_name.strip():
             raise InvalidAction("请选择要补发的频道")
         with self._lock:
@@ -1077,11 +1156,19 @@ class ProcessSupervisor:
                 operation_name=OP_REPLAY,
                 role=ROLE_REPLAY,
                 mode=channel_name,
-                command=self.config.command("replay", channel=channel_name),
+                command=self.config.command("replay", channel=channel_name, message_ids=message_ids),
                 requested_event="replay_requested",
                 requested_message=f"已接受频道「{channel_name}」补发请求",
                 start_failure_message="补发进程未能启动，请检查本机 Python 环境后重试",
             )
+
+    def preview_replay(self, channel_name: str) -> dict[str, Any]:
+        channel_summary = _channel_config_summary(self.config.channel_state_path)
+        if channel_name not in {item["name"] for item in channel_summary["channels"] if item["state"] == "ready"}:
+            raise InvalidAction("指定频道未配置或游标不可用")
+        from channel_replay import preview_channel
+        items = asyncio.run(preview_channel(channel_name=channel_name, channel_state_path=self.config.channel_state_path, lark_profile=self.config.profile))
+        return {"channel": channel_name, "items": items, "count": len(items)}
 
     def cancel_replay(self) -> dict[str, Any]:
         with self._lock:
@@ -1557,6 +1644,18 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/status":
             self._write_json({"ok": True, "data": self.server.supervisor.status()})
             return
+        if path == "/api/listeners":
+            self._write_json({"ok": True, "data": {"listeners": self.server.supervisor.listeners()}})
+            return
+        if path == "/api/replay/preview":
+            channel = parse_qs(urlsplit(self.path).query).get("channel", [""])[0]
+            try:
+                data = self.server.supervisor.preview_replay(channel)
+            except ControlPlaneError as exc:
+                self._error(str(exc), status=400)
+                return
+            self._write_json({"ok": True, "data": data})
+            return
         if path == "/api/session":
             self._write_json(
                 {
@@ -1599,6 +1698,13 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
 
         path = urlsplit(self.path).path
         try:
+            if path == "/api/listeners":
+                name = body.get("name")
+                if not isinstance(name, str):
+                    self._error("监听人员名称无效", status=400)
+                    return
+                self._write_json({"ok": True, "data": {"listeners": self.server.supervisor.add_listener(name)}}, status=201)
+                return
             if path == "/api/actions/start":
                 status = self.server.supervisor.start()
             elif path == "/api/actions/stop":
@@ -1609,12 +1715,14 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                 status = self.server.supervisor.check()
             elif path == "/api/actions/bind":
                 rebind = body.get("rebind", False)
+                keep_existing = body.get("add", False)
                 confirmed = body.get("confirm", False)
-                if not isinstance(rebind, bool) or not isinstance(confirmed, bool):
+                if not isinstance(rebind, bool) or not isinstance(keep_existing, bool) or not isinstance(confirmed, bool):
                     self._error("绑定确认参数无效", status=400)
                     return
                 status = self.server.supervisor.bind(
                     rebind=rebind,
+                    keep_existing=keep_existing,
                     confirmed=confirmed,
                 )
             elif path == "/api/actions/bind/cancel":
@@ -1623,10 +1731,14 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                 status = self.server.supervisor.test()
             elif path == "/api/actions/replay":
                 channel_name = body.get("channel")
+                message_ids = body.get("message_ids")
                 if not isinstance(channel_name, str):
                     self._error("补发频道参数无效", status=400)
                     return
-                status = self.server.supervisor.replay(channel_name)
+                if message_ids is not None and (not isinstance(message_ids, list) or not all(isinstance(item, str) for item in message_ids)):
+                    self._error("补发消息选择参数无效", status=400)
+                    return
+                status = self.server.supervisor.replay(channel_name, message_ids=message_ids)
             elif path == "/api/actions/replay/cancel":
                 status = self.server.supervisor.cancel_replay()
             elif path in {"/api/actions/prime", "/api/actions/prime/force-end"}:

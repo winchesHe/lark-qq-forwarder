@@ -32,8 +32,38 @@ class StateStoreTests(unittest.TestCase):
 
             state = StateStore.load(state_path)
 
-            self.assertEqual(state.data["schema_version"], 2)
+            self.assertEqual(state.data["schema_version"], 3)
             self.assertNotIn("recent_fingerprints", state.data)
+            self.assertEqual(state.group_bindings, [])
+
+    def test_migrates_legacy_group_into_binding_list(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                '{"schema_version":2,"group_openid":"group-legacy"}',
+                encoding="utf-8",
+            )
+
+            state = StateStore.load(state_path)
+
+            self.assertEqual(state.data["schema_version"], 3)
+            self.assertEqual(state.group_openid, "group-legacy")
+            self.assertEqual(len(state.group_bindings), 1)
+            self.assertEqual(state.group_bindings[0]["binding_id"], "binding-legacy-default")
+            self.assertEqual(state.group_bindings[0]["verification_state"], "legacy")
+
+    def test_binding_new_group_keeps_history_but_only_new_group_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = StateStore.load(Path(directory) / "state.json")
+            state.bind_group("group-a", label="主群", binding_id="binding-a")
+            state.bind_group("group-b", label="备用群", binding_id="binding-b")
+
+            self.assertEqual(state.group_openid, "group-b")
+            self.assertEqual(state.active_group_openids(), ["group-b"])
+            self.assertEqual(
+                {group["group_openid"]: group["status"] for group in state.group_bindings},
+                {"group-a": "disabled", "group-b": "active"},
+            )
 
     def test_first_prime_starts_at_end(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -196,10 +226,9 @@ class LarkMessageTests(unittest.TestCase):
         self.assertIsNone(extract_image_key("[图片] 无资源键"))
 
     def test_formats_authoritative_text(self) -> None:
-        self.assertEqual(
-            format_lark_text("Perfecto", "后台文本\n"),
-            "【飞书·Perfecto】\n后台文本",
-        )
+        formatted = format_lark_text("Perfecto", "后台文本\n")
+        self.assertRegex(formatted, r"^【飞书·Perfecto】 20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n后台文本$")
+        self.assertEqual(format_lark_text("Perfecto", "2026-09-02 10:15:53 已有时间"), "2026-09-02 10:15:53 已有时间")
 
 
 class FakeLarkClient:
@@ -391,6 +420,32 @@ class ForwardingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(state.message_position, 10)
             self.assertFalse(state.has_processed_message("message-11"))
+
+    async def test_multi_group_delivery_tracks_each_group_before_advancing_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = StateStore.load(Path(directory) / "state.json")
+            state.data["group_openid"] = "group-a"
+            state.data["qq_groups"] = [
+                {"binding_id": "a", "group_openid": "group-a", "status": "active"},
+                {"binding_id": "b", "group_openid": "group-b", "status": "active"},
+            ]
+            state.prime_lark(chat_id="chat-a", sender_id="perfecto", latest_position=10)
+            messages = [LarkMessage("message-11", 11, "text", "perfecto", "多群")]
+            sender = AsyncMock(side_effect=[{"id": "qq-a"}, BridgeError("群 B 失败")])
+
+            with patch("qq_bridge.send_group_text", new=sender):
+                with self.assertRaises(BridgeError):
+                    await process_pending_messages(
+                        state=state,
+                        lark=FakeLarkClient(messages),
+                        target=LarkTarget("Perfecto", "perfecto", "chat-a"),
+                        api=object(), http_client=object(),
+                        group_openid=state.active_group_openids(),
+                    )
+
+            self.assertEqual(state.message_position, 10)
+            self.assertTrue(state.has_delivery("Perfecto", "group-a", "message-11"))
+            self.assertFalse(state.has_delivery("Perfecto", "group-b", "message-11"))
 
     async def test_replayed_trigger_has_no_pending_messages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
