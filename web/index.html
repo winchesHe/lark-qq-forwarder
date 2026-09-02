@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="飞书到 QQ 转发器的本机控制面" />
+    <meta name="theme-color" content="#f3f4f5" />
+    <title>本机控制面 · 飞书到 QQ</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup" aria-label="飞书到 QQ 本机控制面">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span></div>
+          <div>
+            <p class="eyebrow">本机控制面</p>
+            <p class="brand-name">飞书到 QQ</p>
+          </div>
+        </div>
+        <div class="local-chip"><span class="local-dot"></span>仅本机 · 127.0.0.1</div>
+      </header>
+
+      <main id="main-content" class="main-content">
+        <section class="intro-grid" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow accent-text">运行概览</p>
+            <h1 id="page-title">安静地看住<br /><em>这一条转发链路。</em></h1>
+            <p class="lede">把绑定、主动测试、游标和四个频道自动转发放到一个安全的本机页面里。消息正文仍留在原有转发流程中，不会出现在这里。</p>
+          </div>
+          <div class="session-note">
+            <span class="note-kicker">本次会话</span>
+            <strong id="session-time">正在连接</strong>
+            <span>状态每 2.5 秒更新一次</span>
+          </div>
+        </section>
+
+        <section class="overview-panel panel" aria-labelledby="overall-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">总状态</p>
+              <h2 id="overall-title">转发链路</h2>
+            </div>
+            <span id="overall-badge" class="status-badge is-loading">读取中</span>
+          </div>
+          <div class="overview-body">
+            <div class="status-orb" id="status-orb" aria-hidden="true"><span></span></div>
+            <div class="status-copy">
+              <p id="overall-label" class="status-title">正在读取本机状态</p>
+              <p id="overall-detail" class="status-detail">控制面正在建立连接。</p>
+            </div>
+            <div class="action-row" aria-label="进程操作">
+              <button id="start-button" class="button button-primary" type="button">启动</button>
+              <button id="stop-button" class="button button-secondary" type="button">停止</button>
+              <button id="restart-button" class="button button-secondary" type="button">重启</button>
+            </div>
+          </div>
+          <div id="action-feedback" class="inline-feedback" role="status" aria-live="polite"></div>
+        </section>
+
+        <div class="operations-grid">
+          <section class="panel operation-panel" aria-labelledby="binding-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">QQ 群</p>
+                <h2 id="binding-title">绑定</h2>
+              </div>
+              <span id="binding-badge" class="status-badge is-loading">读取中</span>
+            </div>
+            <div class="operation-copy">
+              <p id="binding-title-copy" class="operation-title">正在读取绑定状态</p>
+              <p id="binding-detail" class="operation-detail">控制面不会显示完整群标识。</p>
+            </div>
+            <div class="operation-actions">
+              <button id="bind-button" class="button button-primary" type="button">开始绑定</button>
+              <button id="rebind-button" class="button button-secondary" type="button">重新绑定</button>
+              <button id="cancel-bind-button" class="button button-secondary" type="button" hidden>取消绑定</button>
+            </div>
+          </section>
+
+          <section class="panel operation-panel" aria-labelledby="test-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">真实投递</p>
+                <h2 id="test-title">主动消息测试</h2>
+              </div>
+              <span id="test-badge" class="status-badge is-loading">尚未执行</span>
+            </div>
+            <div class="operation-copy">
+              <p id="test-title-copy" class="operation-title">确认绑定后再测试</p>
+              <p id="test-detail" class="operation-detail">测试会向真实 QQ 群发送一条测试消息。</p>
+            </div>
+            <div class="warning-note"><span aria-hidden="true">!</span>这不是模拟操作，消息会实际发送。</div>
+            <div class="operation-actions">
+              <button id="test-button" class="button button-primary" type="button">发送测试消息</button>
+            </div>
+          </section>
+
+          <section class="panel operation-panel cursor-panel" aria-labelledby="cursor-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">飞书消息</p>
+                <h2 id="cursor-title">游标</h2>
+              </div>
+              <span id="prime-badge" class="status-badge is-loading">尚未执行</span>
+            </div>
+            <div class="operation-copy">
+              <p id="prime-title-copy" class="operation-title">默认 prime 不补发历史消息</p>
+              <p id="prime-detail" class="operation-detail">默认操作会沿用现有游标；首次初始化从最新位置开始。</p>
+            </div>
+            <div class="operation-actions">
+              <button id="prime-button" class="button button-primary" type="button">执行默认 prime</button>
+              <button id="force-end-button" class="button button-caution" type="button">从最新位置开始</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel replay-panel" aria-labelledby="replay-title">
+          <div class="panel-heading compact-heading">
+            <div>
+              <p class="eyebrow">指定补发</p>
+              <h2 id="replay-title">选择频道补发</h2>
+            </div>
+            <span id="replay-badge" class="status-badge is-loading">尚未执行</span>
+          </div>
+          <div class="replay-layout">
+            <div class="operation-copy replay-copy">
+              <p id="replay-title-copy" class="operation-title">选择一个已建立游标的频道</p>
+              <p id="replay-detail" class="operation-detail">自动转发会从各频道当前游标继续；这里可手动控制所选频道的历史积压。</p>
+            </div>
+            <div class="replay-form">
+              <label for="channel-select">补发频道</label>
+              <div class="replay-controls">
+                <select id="channel-select" disabled>
+                  <option value="">正在读取频道</option>
+                </select>
+                <button id="replay-button" class="button button-primary" type="button" disabled>补发选中频道</button>
+                <button id="cancel-replay-button" class="button button-secondary" type="button" hidden>取消补发</button>
+              </div>
+            </div>
+          </div>
+          <p id="replay-summary" class="panel-footnote">频道自动转发状态正在读取。</p>
+        </section>
+
+        <section class="panel recovery-panel" aria-labelledby="recovery-title">
+          <div class="panel-heading compact-heading">
+            <div>
+              <p class="eyebrow">故障引导</p>
+              <h2 id="recovery-title">遇到问题怎么办</h2>
+            </div>
+            <span class="panel-meta">不提供单条消息重发</span>
+          </div>
+          <div id="recovery-list" class="recovery-list" aria-live="polite">
+            <div class="empty-state">正在读取恢复建议。</div>
+          </div>
+          <div class="recovery-actions">
+            <button id="recovery-check-button" class="button button-secondary" type="button">检查权限与连接</button>
+            <button id="recovery-restart-button" class="button button-primary" type="button">重启转发</button>
+          </div>
+        </section>
+
+        <div class="content-grid">
+          <section class="panel process-panel" aria-labelledby="process-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">运行单元</p>
+                <h2 id="process-title">子进程状态</h2>
+              </div>
+              <span class="panel-meta">由控制面启动</span>
+            </div>
+            <div id="process-list" class="process-list" aria-live="polite">
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+            </div>
+          </section>
+
+          <section class="panel runtime-panel" aria-labelledby="runtime-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">只读信息</p>
+                <h2 id="runtime-title">运行准备</h2>
+              </div>
+              <button id="check-button" class="text-button" type="button">运行只读检查 <span aria-hidden="true">↗</span></button>
+            </div>
+            <div id="runtime-list" class="runtime-list">
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+            </div>
+            <p class="panel-footnote">检查只验证本地配置、飞书会话和 QQ 网关连接，不发送消息。</p>
+          </section>
+        </div>
+
+        <section class="panel events-panel" aria-labelledby="events-title">
+          <div class="panel-heading compact-heading">
+            <div>
+              <p class="eyebrow">结构化记录</p>
+              <h2 id="events-title">当前会话事件</h2>
+            </div>
+            <span class="panel-meta">仅显示脱敏状态</span>
+          </div>
+          <div id="events-list" class="events-list" aria-live="polite">
+            <div class="empty-state">正在读取当前会话事件。</div>
+          </div>
+        </section>
+
+        <p id="global-error" class="global-error" role="alert" hidden></p>
+      </main>
+
+      <footer class="footer">
+        <span>本机工具 · 不开放局域网访问</span>
+        <span>控制面不会展示消息正文</span>
+      </footer>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
