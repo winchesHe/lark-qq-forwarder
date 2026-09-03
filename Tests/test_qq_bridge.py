@@ -280,6 +280,10 @@ class LarkMessageTests(unittest.TestCase):
             format_lark_text("Perfecto", "2026-09-03 09:11:03\n【行业解码 吴均】\n2026-09-03 09:11:03\n正文"),
             "2026-09-03 09:11:03\n【行业解码 吴均】\n正文",
         )
+        self.assertEqual(
+            format_lark_text("新生代柚子(屏蔽问答)", "2026-09-03 09:29:45\n誉衡走势没走弱的话，尽量下午再去找卖点"),
+            "新生代柚子     2026-09-03 09:29:45\n誉衡走势没走弱的话，尽量下午再去找卖点",
+        )
 
     def test_incremental_pagination_stops_at_local_cursor(self) -> None:
         client = LarkClient(profile="fixture")

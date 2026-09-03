@@ -708,6 +708,12 @@ def format_lark_text(contact_name: str, content: str) -> str:
     timestamp_line = re.compile(r"^\s*20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\s*$")
     if len(lines) >= 4 and timestamp_line.match(lines[0]) and timestamp_line.match(lines[2]):
         text = "\n".join([lines[0], lines[1], *lines[3:]]).strip()
+    # 新生代柚子需要显式标识，便于在多个 QQ 群来源中快速区分；其他来源不改变原格式。
+    is_xinshengdai = contact_name.strip().startswith("新生代柚子")
+    if is_xinshengdai:
+        lines = text.splitlines()
+        if lines and timestamp_line.match(lines[0]):
+            return "新生代柚子     " + lines[0].strip() + ("\n" + "\n".join(lines[1:]) if len(lines) > 1 else "")
     # 消息正文可能含零宽字符、不换行空格等不可见分隔符，先归一化后再判定。
     timestamp_text = text.replace("\u200b", "").replace("\ufeff", "").replace("\u00a0", " ")
     # 飞书消息中可能带完整日期、仅时间，或中文日期分隔符；不要再补一层当前时间。
@@ -722,6 +728,8 @@ def format_lark_text(contact_name: str, content: str) -> str:
     if has_timestamp:
         return text
     timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    if is_xinshengdai:
+        return f"新生代柚子     {timestamp}\n{text}"
     return f"【飞书·{contact_name}】 {timestamp}\n{text}"
 
 
