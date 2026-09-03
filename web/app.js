@@ -64,6 +64,10 @@
     listenerFeedback: document.querySelector("#listener-feedback"),
     listenerChannelList: document.querySelector("#listener-channel-list"),
     sourceSettingsList: document.querySelector("#source-settings-list"),
+    routingDialog: document.querySelector("#routing-dialog"),
+    routingDialogList: document.querySelector("#routing-dialog-list"),
+    routingDialogSummary: document.querySelector("#routing-dialog-summary"),
+    routingDialogConfirm: document.querySelector("#routing-dialog-confirm"),
   };
 
   const stateLabels = {
@@ -310,6 +314,13 @@
           edit.dataset.groupLabel = name;
           edit.disabled = blocked || busy || busyState;
           actions.appendChild(edit);
+          const route = makeElement("button", "text-button binding-group-edit", "管理来源");
+          route.type = "button";
+          route.dataset.bindingId = group.binding_id || "";
+          route.dataset.groupLabel = name;
+          route.dataset.route = "true";
+          route.disabled = blocked || busy || busyState;
+          actions.appendChild(route);
           const remove = makeElement("button", "text-button binding-group-remove", "删除");
           remove.type = "button";
           remove.dataset.bindingId = group.binding_id || "";
@@ -672,6 +683,16 @@
         runAction("/api/actions/start", "启动");
       }
     });
+    if (elements.routingDialogConfirm) elements.routingDialogConfirm.addEventListener("click", async function (event) {
+      event.preventDefault();
+      const bindingId = elements.routingDialog.dataset.bindingId;
+      const sourceNames = Array.from(elements.routingDialogList.querySelectorAll("input:checked")).map(input => input.value);
+      try {
+        await fetchJson("/api/routing", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ binding_id: bindingId, source_names: sourceNames }) });
+        elements.routingDialog.close();
+        await refresh();
+      } catch (error) { window.alert(error.message || "保存转发来源失败"); }
+    });
     elements.stopButton.addEventListener("click", function () { runAction("/api/actions/stop", "停止"); });
     elements.restartButton.addEventListener("click", function () { runAction("/api/actions/restart", "重启"); });
     elements.checkButton.addEventListener("click", function () { runAction("/api/actions/check", "只读检查"); });
@@ -710,6 +731,20 @@
     if (elements.bindingGroupList) elements.bindingGroupList.addEventListener("click", function (event) {
       const button = event.target.closest("button[data-binding-id]");
       if (!button || !button.dataset.bindingId) return;
+      if (button.dataset.route === "true") {
+        const routing = window.__lastState && window.__lastState.routing || {};
+        const selected = new Set((routing.groups && routing.groups[button.dataset.bindingId]) || []);
+        elements.routingDialog.dataset.bindingId = button.dataset.bindingId;
+        setText(elements.routingDialogSummary, `${button.dataset.groupLabel}：选择这个 QQ 群要接收的监听源。`);
+        elements.routingDialogList.replaceChildren();
+        (routing.sources || []).forEach(function (name) {
+          const label = makeElement("label", "routing-source-row", name);
+          const input = document.createElement("input"); input.type = "checkbox"; input.value = name; input.checked = selected.has(name);
+          label.prepend(input); elements.routingDialogList.appendChild(label);
+        });
+        if (elements.routingDialog.showModal) elements.routingDialog.showModal();
+        return;
+      }
       if (button.classList.contains("binding-group-edit")) {
         if (window.confirm("点击确定后，请在目标 QQ 群里 @Bot 发送群名称。等待时间为 90 秒。")) {
           runAction("/api/actions/groups/rename", "等待 QQ 群名", { binding_id: button.dataset.bindingId });
