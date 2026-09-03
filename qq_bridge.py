@@ -1316,11 +1316,11 @@ async def process_source_pending_messages(
                 for target_group in group_openids:
                     if has_delivery and has_delivery(target_group, message.message_id):
                         continue
-                    if post_text:
-                        await send_group_text(api, target_group, format_lark_text(source_name, post_text))
-                        forwarded += 1
                     for image_path in image_paths:
                         await send_group_image(api, http_client, target_group, image_path)
+                        forwarded += 1
+                    if post_text:
+                        await send_group_text(api, target_group, format_lark_text(source_name, post_text))
                         forwarded += 1
                     if mark_delivery:
                         mark_delivery(target_group, message.message_id)

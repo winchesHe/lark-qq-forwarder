@@ -140,21 +140,20 @@ async def _replay_channel_impl(
                 if not image_keys and message.msg_type == "image":
                     raise BridgeError("飞书图片消息缺少 image_key")
                 post_text = extract_post_text(message.content) if message.msg_type == "post" else ""
-                if post_text:
-                    for group_openid in group_openids:
-                        if not qq_state.has_delivery(channel.name, group_openid, message.message_id):
-                            await send_group_text(api, group_openid, format_lark_text(channel.name, post_text))
-                            forwarded += 1
                 with tempfile.TemporaryDirectory(
                     prefix="lark-qq-channel-image-"
                 ) as directory:
-                    for image_key in image_keys:
-                        image_path = await asyncio.to_thread(lark.download_image, message_id=message.message_id, image_key=image_key, output_directory=Path(directory))
-                        for group_openid in group_openids:
-                            if not qq_state.has_delivery(channel.name, group_openid, message.message_id):
-                                await send_group_image(api, http_client, group_openid, image_path)
-                                qq_state.mark_delivery(channel.name, group_openid, message.message_id)
-                                forwarded += 1
+                    image_paths = [await asyncio.to_thread(lark.download_image, message_id=message.message_id, image_key=image_key, output_directory=Path(directory)) for image_key in image_keys]
+                    for group_openid in group_openids:
+                        if qq_state.has_delivery(channel.name, group_openid, message.message_id):
+                            continue
+                        for image_path in image_paths:
+                            await send_group_image(api, http_client, group_openid, image_path)
+                            forwarded += 1
+                        if post_text:
+                            await send_group_text(api, group_openid, format_lark_text(channel.name, post_text))
+                            forwarded += 1
+                        qq_state.mark_delivery(channel.name, group_openid, message.message_id)
             else:
                 logging.info("跳过暂不支持的飞书消息类型：%s", message.msg_type)
                 skipped += 1
