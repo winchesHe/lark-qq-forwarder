@@ -34,6 +34,7 @@ LOCAL_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 EVENT_LIMIT = 80
 LISTENER_FILE_NAME = ".lark-listeners.json"
+SOURCE_SETTINGS_FILE_NAME = ".lark-source-settings.json"
 
 ROLE_PROBE = "notification_probe"
 ROLE_FORWARDER = "forwarder"
@@ -149,6 +150,7 @@ class ControlPlaneConfig:
     state_path: Path
     channel_state_path: Path
     listener_path: Optional[Path] = None
+    source_settings_path: Optional[Path] = None
     profile: str = "tenant-105183"
     contact: str = "Perfecto"
     host: str = LOCAL_HOST
@@ -157,6 +159,8 @@ class ControlPlaneConfig:
     def __post_init__(self) -> None:
         if self.listener_path is None:
             object.__setattr__(self, "listener_path", self.project_dir / LISTENER_FILE_NAME)
+        if self.source_settings_path is None:
+            object.__setattr__(self, "source_settings_path", self.project_dir / SOURCE_SETTINGS_FILE_NAME)
         if self.host != LOCAL_HOST:
             raise ValueError("控制面只能监听 127.0.0.1")
         if not 0 <= self.port <= 65535:
@@ -190,6 +194,7 @@ class ControlPlaneConfig:
             state_path=storage_dir / ".qq-forwarder-state.json",
             channel_state_path=storage_dir / ".lark-channel-cursors.json",
             listener_path=storage_dir / LISTENER_FILE_NAME,
+            source_settings_path=storage_dir / SOURCE_SETTINGS_FILE_NAME,
             port=port,
         )
 
@@ -441,6 +446,19 @@ def _channel_config_summary(path: Path) -> dict[str, Any]:
         else None,
         "channels": channels,
     }
+
+
+def _source_settings(path: Path, names: list[str]) -> dict[str, bool]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        data = {}
+    values = data.get("title_enabled", {}) if isinstance(data, dict) else {}
+    return {name: bool(values.get(name, name.startswith("新生代柚子"))) for name in names}
+
+
+def _save_source_settings(path: Path, settings: dict[str, bool]) -> None:
+    _save_json_atomically(path, {"schema_version": 1, "title_enabled": settings})
 
 
 class ProcessSupervisor:
@@ -804,6 +822,7 @@ class ProcessSupervisor:
         prime = self._operation_snapshot_locked(OP_PRIME)
         replay = self._operation_snapshot_locked(OP_REPLAY)
         channel_replay = _channel_config_summary(self.config.channel_state_path)
+        source_names = list(dict.fromkeys(self._listener_store.names() + [item["name"] for item in channel_replay["channels"]]))
         progress_path = self.config.state_path.with_name(".replay-progress.json")
         replay_progress: dict[str, Any] = {}
         if progress_path.exists():
@@ -859,6 +878,7 @@ class ProcessSupervisor:
             "channel_replay": channel_replay,
             "replay_progress": replay_progress,
             "listeners": self._listener_store.names(),
+            "source_settings": _source_settings(self.config.source_settings_path, source_names),
             "recovery": self._recovery_snapshot_locked(overall_state, runtime),
             "events": list(self._events),
         }
@@ -1838,6 +1858,14 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                     self._error("监听人员名称无效", status=400)
                     return
                 self._write_json({"ok": True, "data": {"listeners": self.server.supervisor.add_listener(name)}}, status=201)
+                return
+            if path == "/api/source-settings":
+                settings = body.get("title_enabled")
+                if not isinstance(settings, dict) or not all(isinstance(k, str) and isinstance(v, bool) for k, v in settings.items()):
+                    self._error("来源标题配置无效", status=400)
+                    return
+                _save_source_settings(self.server.supervisor.config.source_settings_path, settings)
+                self._write_json({"ok": True, "data": {"source_settings": settings}})
                 return
             if path == "/api/actions/start":
                 status = self.server.supervisor.start()

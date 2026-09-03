@@ -47,6 +47,7 @@ DEFAULT_LARK_PROFILE = "tenant-105183"
 DEFAULT_LARK_CONTACT = "Perfecto"
 DEFAULT_LISTENERS = STORAGE_DIR / ".lark-listeners.json"
 DEFAULT_LISTENER_CURSORS = STORAGE_DIR / ".lark-listener-cursors.json"
+DEFAULT_SOURCE_SETTINGS = STORAGE_DIR / ".lark-source-settings.json"
 DEFAULT_PROCESS_LOCK = STORAGE_DIR / ".qq-forwarder.lock"
 DEFAULT_METRICS = STORAGE_DIR / ".qq-forwarder-metrics.json"
 DEFAULT_LOG = STORAGE_DIR / ".qq-forwarder.log"
@@ -700,20 +701,22 @@ def notification_matches_contact(
     )
 
 
-def format_lark_text(contact_name: str, content: str) -> str:
+def format_lark_text(contact_name: str, content: str, *, include_title: Optional[bool] = None) -> str:
     """仅在原消息没有时间信息时补充时间和转发标识，避免重复套壳。"""
     text = content.strip()
+    if include_title is None:
+        include_title = load_source_title_settings(DEFAULT_SOURCE_SETTINGS).get(contact_name, False)
     # 部分监听频道的原文固定带有“时间\n标题\n时间\n正文”双时间头，转发时只保留第一层。
     lines = text.splitlines()
     timestamp_line = re.compile(r"^\s*20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\s*$")
     if len(lines) >= 4 and timestamp_line.match(lines[0]) and timestamp_line.match(lines[2]):
         text = "\n".join([lines[0], lines[1], *lines[3:]]).strip()
     # 新生代柚子需要显式标识，便于在多个 QQ 群来源中快速区分；其他来源不改变原格式。
-    is_xinshengdai = contact_name.strip().startswith("新生代柚子")
-    if is_xinshengdai:
+    title_name = contact_name.split("(", 1)[0].strip() or contact_name.strip()
+    if include_title:
         lines = text.splitlines()
         if lines and timestamp_line.match(lines[0]):
-            return "新生代柚子     " + lines[0].strip() + ("\n" + "\n".join(lines[1:]) if len(lines) > 1 else "")
+            return title_name + "     " + lines[0].strip() + ("\n" + "\n".join(lines[1:]) if len(lines) > 1 else "")
     # 消息正文可能含零宽字符、不换行空格等不可见分隔符，先归一化后再判定。
     timestamp_text = text.replace("\u200b", "").replace("\ufeff", "").replace("\u00a0", " ")
     # 飞书消息中可能带完整日期、仅时间，或中文日期分隔符；不要再补一层当前时间。
@@ -728,9 +731,18 @@ def format_lark_text(contact_name: str, content: str) -> str:
     if has_timestamp:
         return text
     timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    if is_xinshengdai:
-        return f"新生代柚子     {timestamp}\n{text}"
+    if include_title:
+        return f"{title_name}     {timestamp}\n{text}"
     return f"【飞书·{contact_name}】 {timestamp}\n{text}"
+
+
+def load_source_title_settings(path: Path) -> dict[str, bool]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        value = {}
+    settings = value.get("title_enabled", {}) if isinstance(value, dict) else {}
+    return {str(name): bool(enabled) for name, enabled in settings.items() if isinstance(name, str)}
 
 
 @dataclass(frozen=True)

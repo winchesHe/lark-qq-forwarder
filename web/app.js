@@ -63,6 +63,7 @@
     listenerAddButton: document.querySelector("#listener-add-button"),
     listenerFeedback: document.querySelector("#listener-feedback"),
     listenerChannelList: document.querySelector("#listener-channel-list"),
+    sourceSettingsList: document.querySelector("#source-settings-list"),
   };
 
   const stateLabels = {
@@ -556,6 +557,24 @@
       elements.listenerList.replaceChildren();
       (Array.isArray(data.listeners) ? data.listeners : ["Perfecto"]).forEach(function (name) {
         elements.listenerList.appendChild(makeElement("span", "listener-chip", name));
+      });
+    }
+    if (elements.sourceSettingsList) {
+      elements.sourceSettingsList.replaceChildren();
+      const settings = data.source_settings || {};
+      Object.keys(settings).forEach(function (name) {
+        const row = makeElement("label", "listener-chip source-setting-row", name);
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = Boolean(settings[name]);
+        input.dataset.sourceName = name;
+        input.addEventListener("change", function () {
+          const next = Object.assign({}, window.__lastState.source_settings || {});
+          next[name] = input.checked;
+          fetchJson("/api/source-settings", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ title_enabled: next }) }).catch(function () { input.checked = !input.checked; });
+        });
+        row.appendChild(input);
+        elements.sourceSettingsList.appendChild(row);
       });
     }
     if (elements.listenerChannelList) {
