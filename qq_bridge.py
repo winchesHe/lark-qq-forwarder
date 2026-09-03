@@ -705,7 +705,9 @@ def format_lark_text(contact_name: str, content: str, *, include_title: Optional
     """仅在原消息没有时间信息时补充时间和转发标识，避免重复套壳。"""
     text = content.strip()
     if include_title is None:
-        include_title = load_source_title_settings(DEFAULT_SOURCE_SETTINGS).get(contact_name, False)
+        include_title = load_source_title_settings(DEFAULT_SOURCE_SETTINGS).get(
+            contact_name, contact_name.strip().startswith("新生代柚子")
+        )
     # 部分监听频道的原文固定带有“时间\n标题\n时间\n正文”双时间头，转发时只保留第一层。
     lines = text.splitlines()
     timestamp_line = re.compile(r"^\s*20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\s*$")
