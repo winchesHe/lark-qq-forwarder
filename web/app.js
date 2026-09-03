@@ -63,7 +63,8 @@
     listenerAddButton: document.querySelector("#listener-add-button"),
     listenerFeedback: document.querySelector("#listener-feedback"),
     listenerChannelList: document.querySelector("#listener-channel-list"),
-    sourceSettingsList: document.querySelector("#source-settings-list"),
+    channelName: document.querySelector("#channel-name"),
+    channelAddButton: document.querySelector("#channel-add-button"),
     routingDialog: document.querySelector("#routing-dialog"),
     routingDialogList: document.querySelector("#routing-dialog-list"),
     routingDialogSummary: document.querySelector("#routing-dialog-summary"),
@@ -459,7 +460,8 @@
     let detail = "自动转发会从各频道当前游标继续；这里可手动控制所选频道的历史积压。";
     const serviceBlocked = serviceMustBeStopped(overallState);
     if (serviceBlocked && state === "idle") {
-      title = "四个频道正在自动转发";
+      const channelCount = readyChannels.length;
+      title = `${channelCount} 个频道正在自动转发`;
       detail = "自动转发运行中。如需手动补发历史消息，请先停止转发服务。";
     }
     if (state === "running" || state === "cancelling") {
@@ -568,24 +570,6 @@
       elements.listenerList.replaceChildren();
       (Array.isArray(data.listeners) ? data.listeners : ["Perfecto"]).forEach(function (name) {
         elements.listenerList.appendChild(makeElement("span", "listener-chip", name));
-      });
-    }
-    if (elements.sourceSettingsList) {
-      elements.sourceSettingsList.replaceChildren();
-      const settings = data.source_settings || {};
-      Object.keys(settings).forEach(function (name) {
-        const row = makeElement("label", "listener-chip source-setting-row", name);
-        const input = document.createElement("input");
-        input.type = "checkbox";
-        input.checked = Boolean(settings[name]);
-        input.dataset.sourceName = name;
-        input.addEventListener("change", function () {
-          const next = Object.assign({}, window.__lastState.source_settings || {});
-          next[name] = input.checked;
-          fetchJson("/api/source-settings", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ title_enabled: next }) }).catch(function () { input.checked = !input.checked; });
-        });
-        row.appendChild(input);
-        elements.sourceSettingsList.appendChild(row);
       });
     }
     if (elements.listenerChannelList) {
@@ -727,6 +711,29 @@
         }
       } catch (error) { setText(elements.listenerFeedback, error.message || "新增监听失败。"); }
       finally { elements.listenerAddButton.disabled = false; }
+    });
+    if (elements.channelAddButton) elements.channelAddButton.addEventListener("click", async function () {
+      const name = (elements.channelName.value || "").trim();
+      if (!name) { setText(elements.listenerFeedback, "请输入飞书群名称。"); return; }
+      elements.channelAddButton.disabled = true;
+      try {
+        await fetchJson("/api/channels", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+        elements.channelName.value = "";
+        setText(elements.listenerFeedback, `已新增群“${name}”，正在刷新监听源…`);
+        const currentState = window.__lastState && window.__lastState.overall && window.__lastState.overall.state;
+        if (["running", "degraded", "failed"].includes(currentState)) {
+          try {
+            await fetchJson("/api/actions/restart", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: "{}" });
+            setText(elements.listenerFeedback, `已新增群“${name}”，转发任务已自动刷新。`);
+          } catch (reloadError) {
+            setText(elements.listenerFeedback, `群监听已保存，但自动刷新失败：${reloadError.message || "请手动重启"}`);
+          }
+        } else {
+          setText(elements.listenerFeedback, `已新增群“${name}”，下次启动转发任务时生效。`);
+        }
+        await refresh();
+      } catch (error) { setText(elements.listenerFeedback, error.message || "新增群监听失败。"); }
+      finally { elements.channelAddButton.disabled = false; }
     });
     if (elements.bindingGroupList) elements.bindingGroupList.addEventListener("click", function (event) {
       const button = event.target.closest("button[data-binding-id]");

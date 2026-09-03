@@ -119,6 +119,7 @@ class StateStoreTests(unittest.TestCase):
             )
 
             self.assertEqual(cursor, 12)
+
             self.assertTrue(state.has_processed_message("message-12"))
 
     def test_lark_prime_resets_cursor_when_target_changes(self) -> None:
@@ -140,6 +141,7 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(cursor, 30)
             self.assertFalse(state.has_processed_message("message-12"))
 
+
     def test_force_end_moves_cursor_to_latest_and_clears_recent_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = StateStore.load(Path(directory) / "state.json")
@@ -159,6 +161,43 @@ class StateStoreTests(unittest.TestCase):
 
             self.assertEqual(cursor, 30)
             self.assertFalse(state.has_processed_message("message-12"))
+
+
+class ChannelCursorStoreTests(unittest.TestCase):
+    def test_add_channel_starts_from_latest_position(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "channels.json"
+            path.write_text(json.dumps({"schema_version": 1, "channels": [{
+                "name": "已有群", "chat_id": "oc_existing", "cursor_position": 3,
+                "initial_cursor_position": 3, "recent_message_ids": [],
+            }]}), encoding="utf-8")
+            store = ChannelCursorStore.load(path)
+            channel = store.add_channel(name="新群", chat_id="oc_new", latest_position=42)
+            loaded = ChannelCursorStore.load(path).get("新群")
+            self.assertEqual(channel.chat_id, "oc_new")
+            self.assertEqual(loaded.cursor_position, 42)
+            self.assertEqual(loaded.initial_cursor_position, 42)
+
+    def test_add_channel_rejects_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "channels.json"
+            path.write_text(json.dumps({"channels": [{
+                "name": "已有群", "chat_id": "oc_existing", "cursor_position": 3,
+                "initial_cursor_position": 3, "recent_message_ids": [],
+            }]}), encoding="utf-8")
+            store = ChannelCursorStore.load(path)
+            with self.assertRaises(BridgeError):
+                store.add_channel(name="已有群", chat_id="oc_new", latest_position=4)
+
+
+class LarkChatResolutionTests(unittest.TestCase):
+    def test_resolve_group_chat_requires_exact_unique_name(self) -> None:
+        client = LarkClient(profile="fixture")
+        client._run = lambda _arguments: {"data": {"chats": [
+            {"name": "目标群", "chat_id": "oc_target", "chat_mode": "DEFAULT"},
+            {"name": "目标群-备份", "chat_id": "oc_other", "chat_mode": "DEFAULT"},
+        ]}}
+        self.assertEqual(client.resolve_group_chat("目标群"), ("目标群", "oc_target", "DEFAULT"))
 
 
 class JSONLTests(unittest.TestCase):
@@ -262,15 +301,15 @@ class LarkMessageTests(unittest.TestCase):
 
     def test_formats_authoritative_text(self) -> None:
         formatted = format_lark_text("Perfecto", "后台文本\n")
-        self.assertRegex(formatted, r"^【飞书·Perfecto】 20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n后台文本$")
-        self.assertEqual(format_lark_text("Perfecto", "2026-09-02 10:15:53 已有时间"), "2026-09-02 10:15:53 已有时间")
+        self.assertRegex(formatted, r"^【Perfecto】 20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n后台文本$")
+        self.assertEqual(format_lark_text("Perfecto", "2026-09-02 10:15:53 已有时间"), "【Perfecto】 2026-09-02 10:15:53 已有时间")
         self.assertEqual(
             format_lark_text("Perfecto", "吴均2026-09-02 22:06:00\n正文"),
             "吴均2026-09-02 22:06:00\n正文",
         )
         self.assertEqual(
             format_lark_text("Perfecto", "2026年9月2日 22:06\n正文"),
-            "2026年9月2日 22:06\n正文",
+            "【Perfecto】 2026年9月2日 22:06\n正文",
         )
         self.assertEqual(
             format_lark_text("Perfecto", "标题\u200b\n2026-09-03\u00a009:05:12\n正文"),
@@ -282,7 +321,7 @@ class LarkMessageTests(unittest.TestCase):
         )
         self.assertEqual(
             format_lark_text("新生代柚子(屏蔽问答)", "2026-09-03 09:29:45\n誉衡走势没走弱的话，尽量下午再去找卖点"),
-            "新生代柚子     2026-09-03 09:29:45\n誉衡走势没走弱的话，尽量下午再去找卖点",
+            "【新生代柚子】 2026-09-03 09:29:45\n誉衡走势没走弱的话，尽量下午再去找卖点",
         )
 
     def test_incremental_pagination_stops_at_local_cursor(self) -> None:
@@ -439,7 +478,7 @@ class ForwardingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sender.await_count, 4)
             sent_texts = [call.args[2] for call in sender.await_args_list]
             for name in channel_names:
-                self.assertTrue(any(f"【飞书·{name}】" in text for text in sent_texts))
+                self.assertTrue(any(f"【{name}】" in text for text in sent_texts))
             cursors = ChannelCursorStore.load(channel_state_path)
             self.assertTrue(all(cursor.cursor_position == 101 for cursor in (
                 cursors.get(name) for name in channel_names

@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import threading
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -138,6 +139,20 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace(
         "+00:00", "Z"
     )
+
+
+def _save_json_atomically(path: Path, data: dict[str, Any]) -> None:
+    """原子保存控制面配置，避免页面保存时留下半截 JSON。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as handle:
+        temp_path = Path(handle.name)
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    temp_path.replace(path)
 
 
 @dataclass(frozen=True)
@@ -922,6 +937,35 @@ class ProcessSupervisor:
             names = self._listener_store.add(name)
             self._record_event_locked("listener_added", f"已新增监听人员：{name.strip()}")
             return names
+
+    def add_channel(self, name: str) -> dict[str, Any]:
+        """解析并新增飞书群监听源，游标从当前最新消息开始。"""
+        clean_name = name.strip() if isinstance(name, str) else ""
+        if not clean_name or len(clean_name) > 80:
+            raise InvalidAction("群名称不能为空且不能超过 80 个字符")
+        with self._lock:
+            try:
+                from qq_bridge import ChannelCursorStore, LarkClient
+
+                lark = LarkClient(profile=self.config.profile)
+                resolved_name, chat_id, chat_type = lark.resolve_group_chat(clean_name)
+                messages = lark.list_messages(chat_id)
+                latest_position = max((message.position for message in messages), default=0)
+                cursors = ChannelCursorStore.load(self.config.channel_state_path)
+                channel = cursors.add_channel(
+                    name=resolved_name,
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    latest_position=latest_position,
+                )
+            except Exception as exc:
+                if isinstance(exc, (InvalidAction, ControlPlaneError)):
+                    raise
+                # 不把 lark-cli 的原始输出暴露给页面，但保留可读原因。
+                message = str(exc) or "无法读取飞书群信息"
+                raise InvalidAction(message) from exc
+            self._record_event_locked("channel_added", f"已新增群监听：{channel.name}")
+            return {"name": channel.name, "chat_id": channel.chat_id, "cursor_position": channel.cursor_position}
 
     def update_routing(self, binding_id: str, source_names: list[str]) -> dict[str, Any]:
         with self._lock:
@@ -1905,6 +1949,14 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
                     self._error("监听人员名称无效", status=400)
                     return
                 self._write_json({"ok": True, "data": {"listeners": self.server.supervisor.add_listener(name)}}, status=201)
+                return
+            if path == "/api/channels":
+                name = body.get("name")
+                if not isinstance(name, str):
+                    self._error("群监听名称无效", status=400)
+                    return
+                channel = self.server.supervisor.add_channel(name)
+                self._write_json({"ok": True, "data": {"channel": channel}}, status=201)
                 return
             if path == "/api/source-settings":
                 settings = body.get("title_enabled")

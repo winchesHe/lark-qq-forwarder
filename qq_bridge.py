@@ -622,6 +622,44 @@ class ChannelCursorStore:
     def names(self) -> list[str]:
         return [item["name"] for item in self.data["channels"]]
 
+    def add_channel(
+        self,
+        *,
+        name: str,
+        chat_id: str,
+        chat_type: str = "group",
+        latest_position: int = 0,
+    ) -> ChannelCursor:
+        """新增群监听，并从当前最新位置开始，避免把历史消息误发出去。"""
+        name = name.strip()
+        chat_id = chat_id.strip()
+        if not name or len(name) > 80:
+            raise BridgeError("群监听名称不能为空且不能超过 80 个字符")
+        if not chat_id or not _valid_channel_position(latest_position):
+            raise BridgeError("群监听信息无效")
+        channels = self.data["channels"]
+        if any(item.get("name", "").casefold() == name.casefold() for item in channels):
+            raise BridgeError("该群已在监听列表中")
+        if any(item.get("chat_id") == chat_id for item in channels):
+            raise BridgeError("该群已在监听列表中")
+        item = {
+            "name": name,
+            "chat_id": chat_id,
+            "chat_type": chat_type or "group",
+            "cursor_position": latest_position,
+            "initial_cursor_position": latest_position,
+            "recent_message_ids": [],
+        }
+        channels.append(item)
+        self.save()
+        return ChannelCursor(
+            name=name,
+            chat_id=chat_id,
+            cursor_position=latest_position,
+            initial_cursor_position=latest_position,
+            recent_message_ids=(),
+        )
+
     def get(self, name: str) -> ChannelCursor:
         for value in self.data["channels"]:
             if value["name"] != name:
@@ -703,7 +741,7 @@ def notification_matches_contact(
 
 
 def format_lark_text(contact_name: str, content: str, *, include_title: Optional[bool] = None) -> str:
-    """仅在原消息没有时间信息时补充时间和转发标识，避免重复套壳。"""
+    """统一补充来源标题和时间戳，避免额外发送一条来源说明消息。"""
     text = content.strip()
     if include_title is None:
         include_title = load_source_title_settings(DEFAULT_SOURCE_SETTINGS).get(
@@ -714,12 +752,9 @@ def format_lark_text(contact_name: str, content: str, *, include_title: Optional
     timestamp_line = re.compile(r"^\s*20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\s*$")
     if len(lines) >= 4 and timestamp_line.match(lines[0]) and timestamp_line.match(lines[2]):
         text = "\n".join([lines[0], lines[1], *lines[3:]]).strip()
-    # 新生代柚子需要显式标识，便于在多个 QQ 群来源中快速区分；其他来源不改变原格式。
+    # 标题开关只决定来源名称，不再发送额外的 P2/来源说明消息。
     title_name = contact_name.split("(", 1)[0].strip() or contact_name.strip()
-    if include_title:
-        lines = text.splitlines()
-        if lines and timestamp_line.match(lines[0]):
-            return title_name + "     " + lines[0].strip() + ("\n" + "\n".join(lines[1:]) if len(lines) > 1 else "")
+    source_prefix = f"【{title_name}】"
     # 消息正文可能含零宽字符、不换行空格等不可见分隔符，先归一化后再判定。
     timestamp_text = text.replace("\u200b", "").replace("\ufeff", "").replace("\u00a0", " ")
     # 飞书消息中可能带完整日期、仅时间，或中文日期分隔符；不要再补一层当前时间。
@@ -731,12 +766,20 @@ def format_lark_text(contact_name: str, content: str, *, include_title: Optional
         )
         or re.search(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)", timestamp_text)
     )
+    lines = text.splitlines()
+    timestamp_prefix = re.compile(
+        r"^\s*(?:20\d{2}[-/]\d{1,2}[-/]\d{1,2}|20\d{2}年\d{1,2}月\d{1,2}日?)"
+        r"\s+\d{1,2}:\d{2}(?::\d{2})?"
+    )
+    if lines and timestamp_prefix.match(lines[0]):
+        # 已有明确的消息标题（如【行业解码 吴均】）时，不再插入来源标题。
+        if len(lines) > 1 and lines[1].lstrip().startswith("【"):
+            return text
+        return f"{source_prefix} {lines[0].strip()}" + ("\n" + "\n".join(lines[1:]) if len(lines) > 1 else "")
     if has_timestamp:
         return text
     timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    if include_title:
-        return f"{title_name}     {timestamp}\n{text}"
-    return f"【飞书·{contact_name}】 {timestamp}\n{text}"
+    return f"{source_prefix} {timestamp}\n{text}"
 
 
 def load_source_title_settings(path: Path) -> dict[str, bool]:
@@ -953,6 +996,32 @@ class LarkClient:
             sender_id=str(value["open_id"]),
             chat_id=str(value["p2p_chat_id"]),
         )
+
+    def resolve_group_chat(self, chat_name: str) -> tuple[str, str, str]:
+        """按群名解析可见群，要求精确唯一匹配。"""
+        query = chat_name.strip()
+        if not query:
+            raise BridgeError("群名称不能为空")
+        payload = self._run(
+            [
+                "im", "+chat-search", "--query", query,
+                "--disable-search-by-user", "--as", "user",
+                "--page-all", "--page-limit", "100", "--format", "json",
+            ]
+        )
+        candidates: dict[str, tuple[str, str, str]] = {}
+        for value in _walk_objects(payload):
+            chat_id = value.get("chat_id")
+            name = value.get("name") or value.get("chat_name")
+            chat_mode = value.get("chat_mode") or value.get("chat_type") or "group"
+            if not isinstance(chat_id, str) or not isinstance(name, str):
+                continue
+            if name.casefold() != query.casefold():
+                continue
+            candidates[chat_id] = (name, chat_id, str(chat_mode))
+        if len(candidates) != 1:
+            raise BridgeError(f"群 {query} 必须唯一匹配，当前匹配 {len(candidates)} 个")
+        return next(iter(candidates.values()))
 
     def list_messages(self, chat_id: str) -> list[LarkMessage]:
         payload = self._run(

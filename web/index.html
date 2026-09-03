@@ -28,7 +28,7 @@
           <div>
             <p class="eyebrow accent-text">运行概览</p>
             <h1 id="page-title">安静地看住<br /><em>这一条转发链路。</em></h1>
-            <p class="lede">把绑定、主动测试、游标和四个频道自动转发放到一个安全的本机页面里。消息正文仍留在原有转发流程中，不会出现在这里。</p>
+            <p class="lede">把绑定、主动测试、游标和多个频道自动转发放到一个安全的本机页面里。消息正文仍留在原有转发流程中，不会出现在这里。</p>
           </div>
           <div class="session-note">
             <span class="note-kicker">本次会话</span>
@@ -91,8 +91,10 @@
               <p id="listener-feedback" class="panel-footnote" role="status" aria-live="polite"></p>
               <div class="listener-inline-heading listener-channel-heading"><span class="eyebrow">当前监听群频道</span><span class="panel-footnote">自动转发状态</span></div>
               <div id="listener-channel-list" class="listener-list"></div>
-              <div class="listener-inline-heading listener-channel-heading"><span class="eyebrow">来源标题</span><span class="panel-footnote">按来源单独控制</span></div>
-              <div id="source-settings-list" class="listener-list"></div>
+              <div class="listener-add-row">
+                <input id="channel-name" type="text" maxlength="80" placeholder="输入飞书群名称" />
+                <button id="channel-add-button" class="button button-secondary" type="button">新增群监听</button>
+              </div>
             </div>
           </section>
 
