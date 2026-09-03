@@ -703,14 +703,16 @@ def notification_matches_contact(
 def format_lark_text(contact_name: str, content: str) -> str:
     """仅在原消息没有时间信息时补充时间和转发标识，避免重复套壳。"""
     text = content.strip()
+    # 消息正文可能含零宽字符、不换行空格等不可见分隔符，先归一化后再判定。
+    timestamp_text = text.replace("\u200b", "").replace("\ufeff", "").replace("\u00a0", " ")
     # 飞书消息中可能带完整日期、仅时间，或中文日期分隔符；不要再补一层当前时间。
     # 不使用词边界，避免时间紧贴中文标题时被漏判（中文字符也会被正则视为“词”）。
     has_timestamp = bool(
         re.search(
             r"20\d{2}(?:[-/]\d{1,2}[-/]\d{1,2}|年\d{1,2}月\d{1,2}日?)(?:[ T]+\d{1,2}:\d{2}(?::\d{2})?)?",
-            text,
+            timestamp_text,
         )
-        or re.search(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)", text)
+        or re.search(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)", timestamp_text)
     )
     if has_timestamp:
         return text
