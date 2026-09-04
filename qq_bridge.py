@@ -782,6 +782,11 @@ def format_lark_text(contact_name: str, content: str, *, include_title: Optional
     return f"{source_prefix} {timestamp}\n{text}"
 
 
+def is_content_violation_error(exc: BaseException) -> bool:
+    """QQ 审核拒绝属于消息本身不可投递，应跳过而不是卡住来源游标。"""
+    return "消息内容违规" in str(exc)
+
+
 def load_source_title_settings(path: Path) -> dict[str, bool]:
     try:
         value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -1390,10 +1395,23 @@ async def process_source_pending_messages(
 
     async def deliver_to_group(
         target_group: str, send: Callable[[str], Any]
-    ) -> bool:
+    ) -> Any:
         if has_delivery and has_delivery(target_group, message.message_id):
             return False
-        await send(target_group)
+        try:
+            await send(target_group)
+        except BridgeError as exc:
+            if not is_content_violation_error(exc):
+                raise
+            LOGGER.warning(
+                "跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s",
+                source_name,
+                message.message_id,
+                target_group,
+            )
+            if mark_delivery:
+                mark_delivery(target_group, message.message_id)
+            return "skipped"
         if mark_delivery:
             mark_delivery(target_group, message.message_id)
         return True
@@ -1415,12 +1433,26 @@ async def process_source_pending_messages(
                 for target_group in group_openids:
                     if has_delivery and has_delivery(target_group, message.message_id):
                         continue
+                    rejected = False
                     for image_path in image_paths:
-                        await send_group_image(api, http_client, target_group, image_path)
-                        forwarded += 1
-                    if post_text:
-                        await send_group_text(api, target_group, format_lark_text(source_name, post_text))
-                        forwarded += 1
+                        try:
+                            await send_group_image(api, http_client, target_group, image_path)
+                            forwarded += 1
+                        except BridgeError as exc:
+                            if not is_content_violation_error(exc):
+                                raise
+                            LOGGER.warning("跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s", source_name, message.message_id, target_group)
+                            rejected = True
+                            break
+                    if post_text and not rejected:
+                        try:
+                            await send_group_text(api, target_group, format_lark_text(source_name, post_text))
+                            forwarded += 1
+                        except BridgeError as exc:
+                            if not is_content_violation_error(exc):
+                                raise
+                            LOGGER.warning("跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s", source_name, message.message_id, target_group)
+                            rejected = True
                     if mark_delivery:
                         mark_delivery(target_group, message.message_id)
             advance(message)

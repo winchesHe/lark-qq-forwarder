@@ -543,6 +543,25 @@ class ForwardingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state.message_position, 10)
             self.assertFalse(state.has_processed_message("message-11"))
 
+    async def test_content_violation_skips_message_and_advances_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = StateStore.load(Path(directory) / "state.json")
+            state.prime_lark(chat_id="chat-a", sender_id="perfecto", latest_position=10)
+            messages = [LarkMessage("message-11", 11, "text", "perfecto", "审核拒绝")]
+            with patch(
+                "qq_bridge.send_group_text",
+                new=AsyncMock(side_effect=BridgeError("QQ Bot API error：消息内容违规")),
+            ):
+                result = await process_pending_messages(
+                    state=state,
+                    lark=FakeLarkClient(messages),
+                    target=LarkTarget("Perfecto", "perfecto", "chat-a"),
+                    api=object(), http_client=object(), group_openid="group-a",
+                )
+            self.assertEqual(result, (1, 0))
+            self.assertEqual(state.message_position, 11)
+            self.assertTrue(state.has_processed_message("message-11"))
+
     async def test_multi_group_delivery_tracks_each_group_before_advancing_cursor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = StateStore.load(Path(directory) / "state.json")
