@@ -47,6 +47,8 @@ DEFAULT_LARK_PROFILE = "tenant-105183"
 DEFAULT_LARK_CONTACT = "Perfecto"
 DEFAULT_LISTENERS = STORAGE_DIR / ".lark-listeners.json"
 DEFAULT_LISTENER_CURSORS = STORAGE_DIR / ".lark-listener-cursors.json"
+DEFAULT_SOURCE_SETTINGS = STORAGE_DIR / ".lark-source-settings.json"
+DEFAULT_ROUTING = STORAGE_DIR / ".lark-routing.json"
 DEFAULT_PROCESS_LOCK = STORAGE_DIR / ".qq-forwarder.lock"
 DEFAULT_METRICS = STORAGE_DIR / ".qq-forwarder-metrics.json"
 DEFAULT_LOG = STORAGE_DIR / ".qq-forwarder.log"
@@ -620,6 +622,44 @@ class ChannelCursorStore:
     def names(self) -> list[str]:
         return [item["name"] for item in self.data["channels"]]
 
+    def add_channel(
+        self,
+        *,
+        name: str,
+        chat_id: str,
+        chat_type: str = "group",
+        latest_position: int = 0,
+    ) -> ChannelCursor:
+        """新增群监听，并从当前最新位置开始，避免把历史消息误发出去。"""
+        name = name.strip()
+        chat_id = chat_id.strip()
+        if not name or len(name) > 80:
+            raise BridgeError("群监听名称不能为空且不能超过 80 个字符")
+        if not chat_id or not _valid_channel_position(latest_position):
+            raise BridgeError("群监听信息无效")
+        channels = self.data["channels"]
+        if any(item.get("name", "").casefold() == name.casefold() for item in channels):
+            raise BridgeError("该群已在监听列表中")
+        if any(item.get("chat_id") == chat_id for item in channels):
+            raise BridgeError("该群已在监听列表中")
+        item = {
+            "name": name,
+            "chat_id": chat_id,
+            "chat_type": chat_type or "group",
+            "cursor_position": latest_position,
+            "initial_cursor_position": latest_position,
+            "recent_message_ids": [],
+        }
+        channels.append(item)
+        self.save()
+        return ChannelCursor(
+            name=name,
+            chat_id=chat_id,
+            cursor_position=latest_position,
+            initial_cursor_position=latest_position,
+            recent_message_ids=(),
+        )
+
     def get(self, name: str) -> ChannelCursor:
         for value in self.data["channels"]:
             if value["name"] != name:
@@ -700,14 +740,21 @@ def notification_matches_contact(
     )
 
 
-def format_lark_text(contact_name: str, content: str) -> str:
-    """仅在原消息没有时间信息时补充时间和转发标识，避免重复套壳。"""
+def format_lark_text(contact_name: str, content: str, *, include_title: Optional[bool] = None) -> str:
+    """统一补充来源标题和时间戳，避免额外发送一条来源说明消息。"""
     text = content.strip()
+    if include_title is None:
+        include_title = load_source_title_settings(DEFAULT_SOURCE_SETTINGS).get(
+            contact_name, contact_name.strip().startswith("新生代柚子")
+        )
     # 部分监听频道的原文固定带有“时间\n标题\n时间\n正文”双时间头，转发时只保留第一层。
     lines = text.splitlines()
     timestamp_line = re.compile(r"^\s*20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\s*$")
     if len(lines) >= 4 and timestamp_line.match(lines[0]) and timestamp_line.match(lines[2]):
         text = "\n".join([lines[0], lines[1], *lines[3:]]).strip()
+    # 标题开关只决定来源名称，不再发送额外的 P2/来源说明消息。
+    title_name = contact_name.split("(", 1)[0].strip() or contact_name.strip()
+    source_prefix = f"【{title_name}】"
     # 消息正文可能含零宽字符、不换行空格等不可见分隔符，先归一化后再判定。
     timestamp_text = text.replace("\u200b", "").replace("\ufeff", "").replace("\u00a0", " ")
     # 飞书消息中可能带完整日期、仅时间，或中文日期分隔符；不要再补一层当前时间。
@@ -719,10 +766,51 @@ def format_lark_text(contact_name: str, content: str) -> str:
         )
         or re.search(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)", timestamp_text)
     )
+    lines = text.splitlines()
+    timestamp_prefix = re.compile(
+        r"^\s*(?:20\d{2}[-/]\d{1,2}[-/]\d{1,2}|20\d{2}年\d{1,2}月\d{1,2}日?)"
+        r"\s+\d{1,2}:\d{2}(?::\d{2})?"
+    )
+    if lines and timestamp_prefix.match(lines[0]):
+        # 已有明确的消息标题（如【行业解码 吴均】）时，不再插入来源标题。
+        if len(lines) > 1 and lines[1].lstrip().startswith("【"):
+            return text
+        return f"{source_prefix} {lines[0].strip()}" + ("\n" + "\n".join(lines[1:]) if len(lines) > 1 else "")
     if has_timestamp:
         return text
     timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    return f"【飞书·{contact_name}】 {timestamp}\n{text}"
+    return f"{source_prefix} {timestamp}\n{text}"
+
+
+def is_content_violation_error(exc: BaseException) -> bool:
+    """QQ 审核拒绝属于消息本身不可投递，应跳过而不是卡住来源游标。"""
+    return "消息内容违规" in str(exc)
+
+
+def load_source_title_settings(path: Path) -> dict[str, bool]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        value = {}
+    settings = value.get("title_enabled", {}) if isinstance(value, dict) else {}
+    return {str(name): bool(enabled) for name, enabled in settings.items() if isinstance(name, str)}
+
+
+def routed_group_openids(state: StateStore, source_name: str, path: Path = DEFAULT_ROUTING) -> list[str]:
+    """按来源读取最新群路由；未配置的群默认接收所有来源。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        data = {}
+    excluded = data.get("excluded_sources", {}) if isinstance(data, dict) else {}
+    result: list[str] = []
+    for group in state.group_bindings:
+        if group.get("status") != "active" or not isinstance(group.get("group_openid"), str):
+            continue
+        blocked = excluded.get(group.get("binding_id"), []) if isinstance(excluded, dict) else []
+        if not isinstance(blocked, list) or source_name not in blocked:
+            result.append(group["group_openid"])
+    return result
 
 
 @dataclass(frozen=True)
@@ -913,6 +1001,32 @@ class LarkClient:
             sender_id=str(value["open_id"]),
             chat_id=str(value["p2p_chat_id"]),
         )
+
+    def resolve_group_chat(self, chat_name: str) -> tuple[str, str, str]:
+        """按群名解析可见群，要求精确唯一匹配。"""
+        query = chat_name.strip()
+        if not query:
+            raise BridgeError("群名称不能为空")
+        payload = self._run(
+            [
+                "im", "+chat-search", "--query", query,
+                "--disable-search-by-user", "--as", "user",
+                "--page-all", "--page-limit", "100", "--format", "json",
+            ]
+        )
+        candidates: dict[str, tuple[str, str, str]] = {}
+        for value in _walk_objects(payload):
+            chat_id = value.get("chat_id")
+            name = value.get("name") or value.get("chat_name")
+            chat_mode = value.get("chat_mode") or value.get("chat_type") or "group"
+            if not isinstance(chat_id, str) or not isinstance(name, str):
+                continue
+            if name.casefold() != query.casefold():
+                continue
+            candidates[chat_id] = (name, chat_id, str(chat_mode))
+        if len(candidates) != 1:
+            raise BridgeError(f"群 {query} 必须唯一匹配，当前匹配 {len(candidates)} 个")
+        return next(iter(candidates.values()))
 
     def list_messages(self, chat_id: str) -> list[LarkMessage]:
         payload = self._run(
@@ -1265,8 +1379,6 @@ async def process_source_pending_messages(
     mark_delivery: Optional[Callable[[str, str], None]] = None,
 ) -> tuple[int, int]:
     group_openids = [group_openid] if isinstance(group_openid, str) else list(group_openid)
-    if not group_openids:
-        raise BridgeError("没有可用的 QQ 群绑定")
     list_since = getattr(lark, "list_messages_since", None)
     fetch_started = time.perf_counter()
     try:
@@ -1283,10 +1395,23 @@ async def process_source_pending_messages(
 
     async def deliver_to_group(
         target_group: str, send: Callable[[str], Any]
-    ) -> bool:
+    ) -> Any:
         if has_delivery and has_delivery(target_group, message.message_id):
             return False
-        await send(target_group)
+        try:
+            await send(target_group)
+        except BridgeError as exc:
+            if not is_content_violation_error(exc):
+                raise
+            LOGGER.warning(
+                "跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s",
+                source_name,
+                message.message_id,
+                target_group,
+            )
+            if mark_delivery:
+                mark_delivery(target_group, message.message_id)
+            return "skipped"
         if mark_delivery:
             mark_delivery(target_group, message.message_id)
         return True
@@ -1308,12 +1433,26 @@ async def process_source_pending_messages(
                 for target_group in group_openids:
                     if has_delivery and has_delivery(target_group, message.message_id):
                         continue
-                    if post_text:
-                        await send_group_text(api, target_group, format_lark_text(source_name, post_text))
-                        forwarded += 1
+                    rejected = False
                     for image_path in image_paths:
-                        await send_group_image(api, http_client, target_group, image_path)
-                        forwarded += 1
+                        try:
+                            await send_group_image(api, http_client, target_group, image_path)
+                            forwarded += 1
+                        except BridgeError as exc:
+                            if not is_content_violation_error(exc):
+                                raise
+                            LOGGER.warning("跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s", source_name, message.message_id, target_group)
+                            rejected = True
+                            break
+                    if post_text and not rejected:
+                        try:
+                            await send_group_text(api, target_group, format_lark_text(source_name, post_text))
+                            forwarded += 1
+                        except BridgeError as exc:
+                            if not is_content_violation_error(exc):
+                                raise
+                            LOGGER.warning("跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s", source_name, message.message_id, target_group)
+                            rejected = True
                     if mark_delivery:
                         mark_delivery(target_group, message.message_id)
             advance(message)
@@ -1460,6 +1599,7 @@ async def _forward_forever_impl(
     channel_state_path: Path = DEFAULT_CHANNEL_STATE,
     listeners_path: Path = DEFAULT_LISTENERS,
     listener_cursors_path: Path = DEFAULT_LISTENER_CURSORS,
+    routing_path: Path = DEFAULT_ROUTING,
     metrics_path: Path = DEFAULT_METRICS,
 ) -> None:
     group_openids = state.active_group_openids()
@@ -1496,6 +1636,8 @@ async def _forward_forever_impl(
     offset = state.prime_input(input_path)
     api, http_client = await create_api()
     metrics = ForwarderMetrics(metrics_path)
+    def groups_for(source_name: str) -> list[str]:
+        return routed_group_openids(state, source_name, routing_path)
     print(
         "飞书 → QQ 转发已启动；自动来源：Perfecto 和 "
         f"{len(channel_cursors.names())} 个频道；通知仅作唤醒。"
@@ -1515,7 +1657,7 @@ async def _forward_forever_impl(
                         source_sender_id=target_for_listener.sender_id,
                         cursor=listener_store.cursor(name),
                         lark=lark, api=api, http_client=http_client,
-                        group_openid=group_openids,
+                        group_openid=groups_for(target_for_listener.name),
                         has_processed=lambda message_id, listener=name: listener_store.has_processed(listener, message_id),
                         advance=lambda message, listener=name: listener_store.advance(listener, message),
                         has_delivery=lambda group, message_id, listener=name: state.has_delivery(listener, group, message_id),
@@ -1528,14 +1670,14 @@ async def _forward_forever_impl(
                     await process_channel_pending_messages(
                         state=state, cursors=channel_cursors, channel_name=channel_name,
                         lark=lark, api=api, http_client=http_client,
-                        group_openid=group_openids,
+                        group_openid=groups_for(channel_name),
                     )
                 except BridgeError as exc:
                     logging.error("兜底同步 %s 失败：%s", channel_name, exc)
             try:
                 await process_pending_messages(
                     state=state, lark=lark, target=target, api=api,
-                    http_client=http_client, group_openid=group_openids,
+                    http_client=http_client, group_openid=groups_for(target.name),
                 )
             except BridgeError as exc:
                 logging.error("兜底同步 Perfecto 失败：%s", exc)
@@ -1551,7 +1693,7 @@ async def _forward_forever_impl(
                 lark=lark,
                 api=api,
                 http_client=http_client,
-                group_openid=group_openids,
+                group_openid=groups_for(target_for_listener.name),
                 has_processed=lambda message_id, listener=name: listener_store.has_processed(listener, message_id),
                 advance=lambda message, listener=name: listener_store.advance(listener, message),
                 has_delivery=lambda group, message_id, listener=name: state.has_delivery(listener, group, message_id),
@@ -1568,7 +1710,7 @@ async def _forward_forever_impl(
                     lark=lark,
                     api=api,
                     http_client=http_client,
-                    group_openid=group_openids,
+                    group_openid=groups_for(channel_name),
                 )
                 LOGGER.info(
                     "启动补扫完成 source=%s pending=%d forwarded=%d",
@@ -1588,7 +1730,7 @@ async def _forward_forever_impl(
                 async with source_semaphore:
                     pending_count, forwarded_count = await process_pending_messages(
                         state=state, lark=lark, target=target, api=api,
-                        http_client=http_client, group_openid=group_openids,
+                        http_client=http_client, group_openid=groups_for(target.name),
                     )
                 print(f"Perfecto API 检查完成：未处理 {pending_count} 条，已转发 {forwarded_count} 条。")
                 metrics.record_sync("Perfecto", pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=True)
@@ -1606,7 +1748,7 @@ async def _forward_forever_impl(
                         source_chat_id=target_for_listener.chat_id,
                         source_sender_id=target_for_listener.sender_id,
                         cursor=listener_store.cursor(name), lark=lark, api=api,
-                        http_client=http_client, group_openid=group_openids,
+                        http_client=http_client, group_openid=groups_for(target_for_listener.name),
                         has_processed=lambda message_id, listener=name: listener_store.has_processed(listener, message_id),
                         advance=lambda message, listener=name: listener_store.advance(listener, message),
                         has_delivery=lambda group, message_id, listener=name: state.has_delivery(listener, group, message_id),
@@ -1626,7 +1768,7 @@ async def _forward_forever_impl(
                     pending_count, forwarded_count = await process_channel_pending_messages(
                         state=state, cursors=channel_cursors, channel_name=channel_name,
                         lark=lark, api=api, http_client=http_client,
-                        group_openid=group_openids,
+                        group_openid=groups_for(channel_name),
                     )
                 print(f"{channel_name} API 检查完成：未处理 {pending_count} 条，已转发 {forwarded_count} 条。")
                 metrics.record_sync(channel_name, pending=pending_count, forwarded=forwarded_count, elapsed_ms=(time.perf_counter() - started) * 1000, success=True)
@@ -1720,6 +1862,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lark-contact", default=DEFAULT_LARK_CONTACT)
     parser.add_argument("--listeners-file", type=Path, default=DEFAULT_LISTENERS)
     parser.add_argument("--listener-cursors", type=Path, default=DEFAULT_LISTENER_CURSORS)
+    parser.add_argument("--routing-file", type=Path, default=DEFAULT_ROUTING)
     parser.add_argument("--lark-cli")
     return parser.parse_args()
 
@@ -1756,6 +1899,7 @@ async def async_main() -> None:
             channel_state_path=args.channel_state,
             listeners_path=args.listeners_file,
             listener_cursors_path=args.listener_cursors,
+            routing_path=args.routing_file,
         )
 
 

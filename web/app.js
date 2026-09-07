@@ -63,6 +63,12 @@
     listenerAddButton: document.querySelector("#listener-add-button"),
     listenerFeedback: document.querySelector("#listener-feedback"),
     listenerChannelList: document.querySelector("#listener-channel-list"),
+    channelName: document.querySelector("#channel-name"),
+    channelAddButton: document.querySelector("#channel-add-button"),
+    routingDialog: document.querySelector("#routing-dialog"),
+    routingDialogList: document.querySelector("#routing-dialog-list"),
+    routingDialogSummary: document.querySelector("#routing-dialog-summary"),
+    routingDialogConfirm: document.querySelector("#routing-dialog-confirm"),
   };
 
   const stateLabels = {
@@ -309,6 +315,13 @@
           edit.dataset.groupLabel = name;
           edit.disabled = blocked || busy || busyState;
           actions.appendChild(edit);
+          const route = makeElement("button", "text-button binding-group-edit", "管理来源");
+          route.type = "button";
+          route.dataset.bindingId = group.binding_id || "";
+          route.dataset.groupLabel = name;
+          route.dataset.route = "true";
+          route.disabled = blocked || busy || busyState;
+          actions.appendChild(route);
           const remove = makeElement("button", "text-button binding-group-remove", "删除");
           remove.type = "button";
           remove.dataset.bindingId = group.binding_id || "";
@@ -447,7 +460,8 @@
     let detail = "自动转发会从各频道当前游标继续；这里可手动控制所选频道的历史积压。";
     const serviceBlocked = serviceMustBeStopped(overallState);
     if (serviceBlocked && state === "idle") {
-      title = "四个频道正在自动转发";
+      const channelCount = readyChannels.length;
+      title = `${channelCount} 个频道正在自动转发`;
       detail = "自动转发运行中。如需手动补发历史消息，请先停止转发服务。";
     }
     if (state === "running" || state === "cancelling") {
@@ -653,6 +667,16 @@
         runAction("/api/actions/start", "启动");
       }
     });
+    if (elements.routingDialogConfirm) elements.routingDialogConfirm.addEventListener("click", async function (event) {
+      event.preventDefault();
+      const bindingId = elements.routingDialog.dataset.bindingId;
+      const sourceNames = Array.from(elements.routingDialogList.querySelectorAll("input:checked")).map(input => input.value);
+      try {
+        await fetchJson("/api/routing", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ binding_id: bindingId, source_names: sourceNames }) });
+        elements.routingDialog.close();
+        await refresh();
+      } catch (error) { window.alert(error.message || "保存转发来源失败"); }
+    });
     elements.stopButton.addEventListener("click", function () { runAction("/api/actions/stop", "停止"); });
     elements.restartButton.addEventListener("click", function () { runAction("/api/actions/restart", "重启"); });
     elements.checkButton.addEventListener("click", function () { runAction("/api/actions/check", "只读检查"); });
@@ -688,9 +712,46 @@
       } catch (error) { setText(elements.listenerFeedback, error.message || "新增监听失败。"); }
       finally { elements.listenerAddButton.disabled = false; }
     });
+    if (elements.channelAddButton) elements.channelAddButton.addEventListener("click", async function () {
+      const name = (elements.channelName.value || "").trim();
+      if (!name) { setText(elements.listenerFeedback, "请输入飞书群名称。"); return; }
+      elements.channelAddButton.disabled = true;
+      try {
+        await fetchJson("/api/channels", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+        elements.channelName.value = "";
+        setText(elements.listenerFeedback, `已新增群“${name}”，正在刷新监听源…`);
+        const currentState = window.__lastState && window.__lastState.overall && window.__lastState.overall.state;
+        if (["running", "degraded", "failed"].includes(currentState)) {
+          try {
+            await fetchJson("/api/actions/restart", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: "{}" });
+            setText(elements.listenerFeedback, `已新增群“${name}”，转发任务已自动刷新。`);
+          } catch (reloadError) {
+            setText(elements.listenerFeedback, `群监听已保存，但自动刷新失败：${reloadError.message || "请手动重启"}`);
+          }
+        } else {
+          setText(elements.listenerFeedback, `已新增群“${name}”，下次启动转发任务时生效。`);
+        }
+        await refresh();
+      } catch (error) { setText(elements.listenerFeedback, error.message || "新增群监听失败。"); }
+      finally { elements.channelAddButton.disabled = false; }
+    });
     if (elements.bindingGroupList) elements.bindingGroupList.addEventListener("click", function (event) {
       const button = event.target.closest("button[data-binding-id]");
       if (!button || !button.dataset.bindingId) return;
+      if (button.dataset.route === "true") {
+        const routing = window.__lastState && window.__lastState.routing || {};
+        const selected = new Set((routing.groups && routing.groups[button.dataset.bindingId]) || []);
+        elements.routingDialog.dataset.bindingId = button.dataset.bindingId;
+        setText(elements.routingDialogSummary, `${button.dataset.groupLabel}：选择这个 QQ 群要接收的监听源。`);
+        elements.routingDialogList.replaceChildren();
+        (routing.sources || []).forEach(function (name) {
+          const label = makeElement("label", "routing-source-row", name);
+          const input = document.createElement("input"); input.type = "checkbox"; input.value = name; input.checked = selected.has(name);
+          label.prepend(input); elements.routingDialogList.appendChild(label);
+        });
+        if (elements.routingDialog.showModal) elements.routingDialog.showModal();
+        return;
+      }
       if (button.classList.contains("binding-group-edit")) {
         if (window.confirm("点击确定后，请在目标 QQ 群里 @Bot 发送群名称。等待时间为 90 秒。")) {
           runAction("/api/actions/groups/rename", "等待 QQ 群名", { binding_id: button.dataset.bindingId });

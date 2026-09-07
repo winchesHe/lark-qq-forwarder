@@ -116,7 +116,7 @@ class ChannelReplayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(summary.skipped_count, 1)
             self.assertEqual(summary.cursor_position, 103)
             self.assertEqual(sender.await_count, 2)
-            self.assertIn("【飞书·指定频道】", sender.await_args_list[0].args[2])
+            self.assertIn("【指定频道】", sender.await_args_list[0].args[2])
             self.assertNotIn("系统事件", sender.await_args_list[0].args[2])
             http_client.aclose.assert_awaited_once()
 
