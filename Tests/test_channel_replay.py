@@ -152,6 +152,62 @@ class ChannelReplayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(store.get("指定频道").cursor_position, 100)
             http_client.aclose.assert_awaited_once()
 
+    async def test_rich_post_sends_text_before_images(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_qq_state(root)
+            write_channel_state(root)
+
+            class PostLarkClient(FakeLarkClient):
+                def download_image(self, *, message_id: str, image_key: str, output_directory: Path) -> Path:
+                    del message_id
+                    path = output_directory / f"{image_key}.jpg"
+                    path.write_bytes(b"image")
+                    return path
+
+            content = json.dumps(
+                {
+                    "zh_cn": {
+                        "content": [[
+                            {"tag": "text", "text": "富文本正文"},
+                            {"tag": "img", "image_key": "img_fixture_1234567890"},
+                        ]]
+                    }
+                },
+                ensure_ascii=False,
+            )
+            lark = PostLarkClient([LarkMessage("om-101", 101, "post", "sender-a", content)])
+            http_client = AsyncMock()
+            send_order: list[str] = []
+
+            async def fake_create_api() -> tuple[object, AsyncMock]:
+                return object(), http_client
+
+            async def send_text(*_args: object, **_kwargs: object) -> dict[str, str]:
+                send_order.append("text")
+                return {"id": "qq-text"}
+
+            async def send_image(*_args: object, **_kwargs: object) -> dict[str, str]:
+                send_order.append("image")
+                return {"id": "qq-image"}
+
+            with (
+                patch("channel_replay.create_api", new=fake_create_api),
+                patch("channel_replay.send_group_text", new=send_text),
+                patch("channel_replay.send_group_image", new=send_image),
+            ):
+                summary = await replay_channel(
+                    channel_name="指定频道",
+                    channel_state_path=root / ".lark-channel-cursors.json",
+                    state_path=root / ".qq-forwarder-state.json",
+                    lark_client=lark,
+                    process_lock_path=root / ".forwarder.lock",
+                )
+
+            self.assertEqual(summary.forwarded_count, 2)
+            self.assertEqual(send_order, ["text", "image"])
+            http_client.aclose.assert_awaited_once()
+
     async def test_unknown_channel_is_rejected_before_lark_or_qq_access(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

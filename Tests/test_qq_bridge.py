@@ -623,6 +623,58 @@ class ForwardingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sender.await_count, 2)
             self.assertEqual(state.message_position, 11)
 
+    async def test_rich_post_sends_text_before_images(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = StateStore.load(root / "state.json")
+            state.prime_lark(chat_id="chat-a", sender_id="perfecto", latest_position=10)
+
+            class PostLarkClient(FakeLarkClient):
+                def download_image(self, *, message_id: str, image_key: str, output_directory: Path) -> Path:
+                    del message_id
+                    path = output_directory / f"{image_key}.jpg"
+                    path.write_bytes(b"image")
+                    return path
+
+            content = json.dumps(
+                {
+                    "zh_cn": {
+                        "content": [[
+                            {"tag": "text", "text": "富文本正文"},
+                            {"tag": "img", "image_key": "img_fixture_1234567890"},
+                        ]]
+                    }
+                },
+                ensure_ascii=False,
+            )
+            lark = PostLarkClient([LarkMessage("post-11", 11, "post", "perfecto", content)])
+            send_order: list[str] = []
+
+            async def send_text(*_args: object, **_kwargs: object) -> dict[str, str]:
+                send_order.append("text")
+                return {"id": "qq-text"}
+
+            async def send_image(*_args: object, **_kwargs: object) -> dict[str, str]:
+                send_order.append("image")
+                return {"id": "qq-image"}
+
+            with (
+                patch("qq_bridge.send_group_text", new=send_text),
+                patch("qq_bridge.send_group_image", new=send_image),
+            ):
+                result = await process_pending_messages(
+                    state=state,
+                    lark=lark,
+                    target=LarkTarget("Perfecto", "perfecto", "chat-a"),
+                    api=object(),
+                    http_client=object(),
+                    group_openid="group-a",
+                )
+
+            self.assertEqual(result, (1, 2))
+            self.assertEqual(send_order, ["text", "image"])
+            self.assertEqual(state.message_position, 11)
+
     async def test_replayed_trigger_has_no_pending_messages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = StateStore.load(Path(directory) / "state.json")

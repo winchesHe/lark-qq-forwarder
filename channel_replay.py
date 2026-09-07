@@ -147,11 +147,11 @@ async def _replay_channel_impl(
                     for group_openid in group_openids:
                         if qq_state.has_delivery(channel.name, group_openid, message.message_id):
                             continue
-                        for image_path in image_paths:
-                            await send_group_image(api, http_client, group_openid, image_path)
-                            forwarded += 1
                         if post_text:
                             await send_group_text(api, group_openid, format_lark_text(channel.name, post_text))
+                            forwarded += 1
+                        for image_path in image_paths:
+                            await send_group_image(api, http_client, group_openid, image_path)
                             forwarded += 1
                         qq_state.mark_delivery(channel.name, group_openid, message.message_id)
             else:
