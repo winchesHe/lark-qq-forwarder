@@ -1434,7 +1434,18 @@ async def process_source_pending_messages(
                     if has_delivery and has_delivery(target_group, message.message_id):
                         continue
                     rejected = False
+                    if post_text:
+                        try:
+                            await send_group_text(api, target_group, format_lark_text(source_name, post_text))
+                            forwarded += 1
+                        except BridgeError as exc:
+                            if not is_content_violation_error(exc):
+                                raise
+                            LOGGER.warning("跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s", source_name, message.message_id, target_group)
+                            rejected = True
                     for image_path in image_paths:
+                        if rejected:
+                            break
                         try:
                             await send_group_image(api, http_client, target_group, image_path)
                             forwarded += 1
@@ -1444,15 +1455,6 @@ async def process_source_pending_messages(
                             LOGGER.warning("跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s", source_name, message.message_id, target_group)
                             rejected = True
                             break
-                    if post_text and not rejected:
-                        try:
-                            await send_group_text(api, target_group, format_lark_text(source_name, post_text))
-                            forwarded += 1
-                        except BridgeError as exc:
-                            if not is_content_violation_error(exc):
-                                raise
-                            LOGGER.warning("跳过 QQ 审核拒绝消息 source=%s message_id=%s group=%s", source_name, message.message_id, target_group)
-                            rejected = True
                     if mark_delivery:
                         mark_delivery(target_group, message.message_id)
             advance(message)
