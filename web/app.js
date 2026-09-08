@@ -209,7 +209,7 @@
     const queue = unified.queue || {};
     const sourceLabel = name => labels[(sources[name] || {}).state] || "尚未启动";
     setText(document.querySelector("#unified-status"),
-      `飞书：${sourceLabel("lark")} · QQ：${sourceLabel("qq")} · 待投递 ${queue.pending || 0} · 发送中 ${queue.active || 0} · 受阻 ${queue.blocked || 0} · 暂停群 ${queue.paused_targets || 0}。QQ 来源需要系统展示通知正文。`);
+      `飞书：${sourceLabel("lark")} · QQ：${sourceLabel("qq")} · 待投递 ${queue.pending || 0} · 发送中 ${queue.active || 0} · 重试耗尽已跳过 ${queue.retry_exhausted || 0} · 受阻 ${queue.blocked || 0} · 暂停群 ${queue.paused_targets || 0}。QQ 来源需要系统展示通知正文。`);
 
     elements.startButton.disabled = busy || state === "running" || state === "starting" || state === "stopping";
     elements.stopButton.disabled = busy || state === "stopped" || state === "stopping";

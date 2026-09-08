@@ -38,6 +38,7 @@ def read_unified_status(path: Path) -> dict:
         try:
             rows = db.execute("SELECT name,state,updated,detail FROM runtime_status").fetchall()
             counts = {row[0]: row[1] for row in db.execute("SELECT status,COUNT(*) FROM deliveries GROUP BY status")}
+            counts["retry_exhausted"] = db.execute("SELECT COUNT(*) FROM delivery_results WHERE outcome='retry_exhausted'").fetchone()[0]
             counts["paused_targets"] = db.execute("SELECT COUNT(*) FROM targets t WHERE paused=1 AND EXISTS (SELECT 1 FROM deliveries d WHERE d.target=t.target AND d.status!='done')").fetchone()[0]
             statuses = {row[0]: {"state": row[1], "updated": row[2], "detail": row[3]} for row in rows}
             service = statuses.get("service", {})

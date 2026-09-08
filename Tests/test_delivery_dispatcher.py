@@ -163,20 +163,50 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         await runner
         self.assertEqual(calls, [("lark:a", "1"), ("qq:b", "1"), ("lark:a", "1"), ("lark:a", "2")])
 
-    async def test_timeout_blocks_lane_after_budget_other_target_completes(self):
+    async def test_timeout_skips_after_budget_and_next_message_completes(self):
         self.store.enqueue("a", "1", ["A", "B"], {})
         self.store.enqueue("a", "2", ["A"], {})
         stop = asyncio.Event()
 
         async def send(task):
-            if task.target == "A":
+            if task.target == "A" and task.message == "1":
                 await asyncio.Event().wait()
 
         runner = asyncio.create_task(self.dispatcher(send, timeout=0.01, max_attempts=2, retry_base=0).run(stop))
-        await self.wait_until(lambda: self.store.counts().get("blocked") == 1)
+        await self.wait_until(lambda: self.store.counts().get("done") == 3)
         stop.set()
         await runner
-        self.assertEqual(self.store.counts(), {"blocked": 1, "done": 1, "pending": 1})
+        self.assertEqual(self.store.counts(), {"done": 3})
+        failed = self.store.db.execute("SELECT id,attempts,payload FROM deliveries WHERE target='A' AND message='1'").fetchone()
+        self.assertEqual((failed["attempts"], failed["payload"]), (2, None))
+        self.assertEqual(self.store.db.execute("SELECT outcome FROM delivery_results WHERE id=?", (failed["id"],)).fetchone()[0], "retry_exhausted")
+
+    async def test_exhausted_account_retry_keeps_backoff_for_other_messages(self):
+        self.store.enqueue("a", "1", ["A"], {})
+        self.store.enqueue("a", "2", ["A"], {})
+        task = self.store.claim(0, 0)
+        async def send(_task):
+            raise RetryDelivery(60, "account")
+        await self.dispatcher(send, max_attempts=1)._deliver(task)
+        self.assertEqual(self.store.counts(), {"done": 1, "pending": 1})
+        due = self.store.db.execute("SELECT due FROM scheduler").fetchone()[0]
+        self.assertIsNone(self.store.claim(due - 1, 0))
+        self.assertEqual(self.store.claim(due, 0).message, "2")
+
+    async def test_restart_skips_old_exhausted_tasks_only_in_selected_scope(self):
+        self.store.enqueue("a", "1", ["A"], {})
+        self.store.enqueue("b", "1", ["B"], {})
+        with self.store.db:
+            self.store.db.execute("UPDATE deliveries SET status='blocked',attempts=5")
+        ids = [row[0] for row in self.store.db.execute("SELECT id FROM deliveries ORDER BY id")]
+        stop = asyncio.Event()
+        stop.set()
+        async def send(_task):
+            self.fail("已耗尽任务不能再次发送")
+        await self.dispatcher(send, ids=[ids[0]]).run(stop)
+        self.assertEqual(self.store.counts(), {"done": 1, "blocked": 1})
+        await self.dispatcher(send).run(stop)
+        self.assertEqual(self.store.counts(), {"done": 2})
 
     async def test_cancellation_releases_claim_for_next_start(self):
         self.store.enqueue("qq:a", "1", ["A"], {})

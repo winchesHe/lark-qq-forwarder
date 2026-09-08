@@ -3,6 +3,7 @@
 import asyncio
 import fcntl
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -237,6 +238,24 @@ class DeliveryStore:
     def counts(self) -> dict[str, int]:
         return {row[0]: row[1] for row in self.db.execute("SELECT status,COUNT(*) FROM deliveries GROUP BY status")}
 
+    def skip_exhausted(self, max_attempts: int, ids: list[int] | None = None) -> int:
+        """重试耗尽的消息结束投递，不继续挡住同线路后续消息。"""
+        if not self.owner:
+            raise RuntimeError("只有队列拥有者可以处理重试耗尽的任务")
+        if ids == []:
+            return 0
+        selected = "" if ids is None else " AND id IN (" + ",".join("?" for _ in ids) + ")"
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            rows = self.db.execute("SELECT id FROM deliveries WHERE status='blocked' AND attempts>=?" + selected,
+                                   (max_attempts, *(ids or []))).fetchall()
+            for row in rows:
+                self.db.execute("UPDATE deliveries SET status='done',payload=NULL WHERE id=?", (row[0],))
+                self.db.execute("INSERT OR REPLACE INTO delivery_results VALUES(?, 'retry_exhausted')", (row[0],))
+        for row in rows:
+            logging.getLogger(__name__).warning("投递重试耗尽，已跳过 task_id=%s max_attempts=%s", row[0], max_attempts)
+        return len(rows)
+
 
 class DeliveryDispatcher:
     def __init__(self, store: DeliveryStore, send: Callable[[Delivery], Awaitable[None]], *,
@@ -269,10 +288,12 @@ class DeliveryDispatcher:
         except RetryDelivery as failure:
             self.store.retry(task, time.time() + failure.delay, failure.scope,
                              blocked=task.attempts >= self.max_attempts)
+            self.store.skip_exhausted(self.max_attempts, [task.id])
         except Exception:
             # 不把 SDK 异常文本写入队列，避免异常携带正文、凭证等信息。
             delay = min(300, self.retry_base * 2 ** min(task.attempts - 1, 16))
             self.store.retry(task, time.time() + delay, blocked=task.attempts >= self.max_attempts)
+            self.store.skip_exhausted(self.max_attempts, [task.id])
         else:
             self.store.complete(task)
 
@@ -283,6 +304,8 @@ class DeliveryDispatcher:
         self._running = True
         active: dict[asyncio.Task, Delivery] = {}
         try:
+            # 升级时处理旧版本留下的耗尽任务；补发仍只影响本次选择。
+            self.store.skip_exhausted(self.max_attempts, self.ids)
             while not stop.is_set():
                 finished = {task for task in active if task.done()}
                 for task in finished:
