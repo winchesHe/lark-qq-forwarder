@@ -284,6 +284,13 @@
     return overallState === "running" || overallState === "degraded" || overallState === "starting" || overallState === "stopping";
   }
 
+  function sourceSavedMessage(name) {
+    const state = ((window.__lastState || {}).overall || {}).state;
+    return ["running", "degraded", "starting"].includes(state)
+      ? `已保存“${name}”，服务会在下一轮来源检查时自动载入（通常 30 秒内），无需重启。`
+      : `已保存“${name}”，下次启动服务时生效。`;
+  }
+
   function renderBinding(operation, runtime, overallState) {
     const fallbackState = runtime.qq_group_bound ? "bound" : "unbound";
     const state = renderOperationBadge(elements.bindingBadge, operation, fallbackState, bindingLabels);
@@ -327,7 +334,7 @@
           route.dataset.bindingId = group.binding_id || "";
           route.dataset.groupLabel = name;
           route.dataset.route = "true";
-          route.disabled = blocked || busy || busyState;
+          route.disabled = busy || busyState || group.status !== "active";
           actions.appendChild(route);
           const remove = makeElement("button", "text-button binding-group-remove", "删除");
           remove.type = "button";
@@ -701,21 +708,12 @@
       try {
         const result = await fetchJson("/api/listeners", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
         elements.listenerName.value = "";
-        setText(elements.listenerFeedback, `已新增“${name}”，正在自动热更新转发任务…`);
+        setText(elements.listenerFeedback, sourceSavedMessage(name));
         if (elements.listenerList) {
           elements.listenerList.replaceChildren();
           result.listeners.forEach(value => elements.listenerList.appendChild(makeElement("span", "listener-chip", value)));
         }
-        try {
-          await fetchJson("/api/actions/restart", {
-            method: "POST",
-            headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          });
-          setText(elements.listenerFeedback, `已新增“${name}”，转发任务已自动热更新。`);
-        } catch (reloadError) {
-          setText(elements.listenerFeedback, `已新增“${name}”，但自动热更新失败：${reloadError.message || "请稍后重试"}`);
-        }
+        await refresh();
       } catch (error) { setText(elements.listenerFeedback, error.message || "新增监听失败。"); }
       finally { elements.listenerAddButton.disabled = false; }
     });
@@ -726,18 +724,7 @@
       try {
         await fetchJson("/api/channels", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
         elements.channelName.value = "";
-        setText(elements.listenerFeedback, `已新增群“${name}”，正在刷新监听源…`);
-        const currentState = window.__lastState && window.__lastState.overall && window.__lastState.overall.state;
-        if (["running", "degraded", "failed"].includes(currentState)) {
-          try {
-            await fetchJson("/api/actions/restart", { method: "POST", headers: { "X-Control-Token": controlToken, "Content-Type": "application/json" }, body: "{}" });
-            setText(elements.listenerFeedback, `已新增群“${name}”，转发任务已自动刷新。`);
-          } catch (reloadError) {
-            setText(elements.listenerFeedback, `群监听已保存，但自动刷新失败：${reloadError.message || "请手动重启"}`);
-          }
-        } else {
-          setText(elements.listenerFeedback, `已新增群“${name}”，下次启动转发任务时生效。`);
-        }
+        setText(elements.listenerFeedback, sourceSavedMessage(name));
         await refresh();
       } catch (error) { setText(elements.listenerFeedback, error.message || "新增群监听失败。"); }
       finally { elements.channelAddButton.disabled = false; }
@@ -749,7 +736,7 @@
         const routing = window.__lastState && window.__lastState.routing || {};
         const selected = new Set((routing.groups && routing.groups[button.dataset.bindingId]) || []);
         elements.routingDialog.dataset.bindingId = button.dataset.bindingId;
-        setText(elements.routingDialogSummary, `${button.dataset.groupLabel}：选择这个 QQ 群要接收的监听源。`);
+        setText(elements.routingDialogSummary, `${button.dataset.groupLabel}：选择这个 QQ 群要接收的监听源。保存后对新采集消息生效，已入队消息保留原目标。`);
         elements.routingDialogList.replaceChildren();
         (routing.sources || []).forEach(function (name) {
           const label = makeElement("label", "routing-source-row", name);
