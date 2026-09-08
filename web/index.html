@@ -62,72 +62,6 @@
         </section>
 
         <p id="global-error" class="global-error" role="alert" hidden></p>
-        <details class="service-diagnostics">
-          <summary>运行详情与故障排查</summary>
-        <section class="panel recovery-panel" aria-labelledby="recovery-title">
-          <div class="panel-heading compact-heading">
-            <div>
-              <p class="eyebrow">故障引导</p>
-              <h2 id="recovery-title">遇到问题怎么办</h2>
-            </div>
-            <span class="panel-meta">不提供单条消息重发</span>
-          </div>
-          <div id="recovery-list" class="recovery-list" aria-live="polite">
-            <div class="empty-state">正在读取恢复建议。</div>
-          </div>
-          <div class="recovery-actions">
-            <button id="recovery-check-button" class="button button-secondary" type="button">检查权限与连接</button>
-            <button id="recovery-restart-button" class="button button-primary" type="button">重启转发</button>
-          </div>
-        </section>
-
-        <div class="content-grid">
-          <section class="panel process-panel" aria-labelledby="process-title">
-            <div class="panel-heading compact-heading">
-              <div>
-                <p class="eyebrow">运行单元</p>
-                <h2 id="process-title">子进程状态</h2>
-              </div>
-              <span class="panel-meta">由控制面启动</span>
-            </div>
-            <div id="process-list" class="process-list" aria-live="polite">
-              <div class="skeleton-row"></div>
-              <div class="skeleton-row"></div>
-            </div>
-          </section>
-
-          <section class="panel runtime-panel" aria-labelledby="runtime-title">
-            <div class="panel-heading compact-heading">
-              <div>
-                <p class="eyebrow">只读信息</p>
-                <h2 id="runtime-title">运行准备</h2>
-              </div>
-              <button id="check-button" class="text-button" type="button">运行只读检查 <span aria-hidden="true">↗</span></button>
-            </div>
-            <div id="runtime-list" class="runtime-list">
-              <div class="skeleton-line"></div>
-              <div class="skeleton-line short"></div>
-              <div class="skeleton-line"></div>
-              <div class="skeleton-line short"></div>
-            </div>
-            <p class="panel-footnote">检查只验证本地配置、飞书会话和 QQ 网关连接，不发送消息。</p>
-          </section>
-        </div>
-
-        <section class="panel events-panel" aria-labelledby="events-title">
-          <div class="panel-heading compact-heading">
-            <div>
-              <p class="eyebrow">结构化记录</p>
-              <h2 id="events-title">当前会话事件</h2>
-            </div>
-            <span class="panel-meta">仅显示脱敏状态</span>
-          </div>
-          <div id="events-list" class="events-list" aria-live="polite">
-            <div class="empty-state">正在读取当前会话事件。</div>
-          </div>
-        </section>
-
-        </details>
 
         <div class="management-tabs" role="tablist" aria-label="选择监听平台">
           <button id="lark-tab" role="tab" aria-selected="true" aria-controls="lark-management" type="button">飞书管理</button>
@@ -315,6 +249,72 @@
           </dialog>
           <p id="qq-error" class="global-error" role="alert" hidden></p>
         </div>
+        <details class="service-diagnostics">
+          <summary>运行详情与故障排查</summary>
+        <section class="panel recovery-panel" aria-labelledby="recovery-title">
+          <div class="panel-heading compact-heading">
+            <div>
+              <p class="eyebrow">故障引导</p>
+              <h2 id="recovery-title">遇到问题怎么办</h2>
+            </div>
+            <span class="panel-meta">不提供单条消息重发</span>
+          </div>
+          <div id="recovery-list" class="recovery-list" aria-live="polite">
+            <div class="empty-state">正在读取恢复建议。</div>
+          </div>
+          <div class="recovery-actions">
+            <button id="recovery-check-button" class="button button-secondary" type="button">检查权限与连接</button>
+            <button id="recovery-restart-button" class="button button-primary" type="button">重启转发</button>
+          </div>
+        </section>
+
+        <div class="content-grid">
+          <section class="panel process-panel" aria-labelledby="process-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">运行单元</p>
+                <h2 id="process-title">子进程状态</h2>
+              </div>
+              <span class="panel-meta">由控制面启动</span>
+            </div>
+            <div id="process-list" class="process-list" aria-live="polite">
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+            </div>
+          </section>
+
+          <section class="panel runtime-panel" aria-labelledby="runtime-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">只读信息</p>
+                <h2 id="runtime-title">运行准备</h2>
+              </div>
+              <button id="check-button" class="text-button" type="button">运行只读检查 <span aria-hidden="true">↗</span></button>
+            </div>
+            <div id="runtime-list" class="runtime-list">
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+            </div>
+            <p class="panel-footnote">检查只验证本地配置、飞书会话和 QQ 网关连接，不发送消息。</p>
+          </section>
+        </div>
+
+        <section class="panel events-panel" aria-labelledby="events-title">
+          <div class="panel-heading compact-heading">
+            <div>
+              <p class="eyebrow">结构化记录</p>
+              <h2 id="events-title">当前会话事件</h2>
+            </div>
+            <span class="panel-meta">仅显示脱敏状态</span>
+          </div>
+          <div id="events-list" class="events-list" aria-live="polite">
+            <div class="empty-state">正在读取当前会话事件。</div>
+          </div>
+        </section>
+
+        </details>
       </main>
 
       <dialog id="replay-dialog" class="replay-dialog" aria-labelledby="replay-dialog-title">
