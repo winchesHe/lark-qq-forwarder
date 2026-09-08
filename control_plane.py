@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlsplit
 
+from qq_sources import QQSourceError, QQSourceStore
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 STORAGE_DIR_ENV = "LARK_QQ_STORAGE_DIR"
@@ -515,6 +517,9 @@ class ProcessSupervisor:
         self._lock = threading.RLock()
         self._server_port = config.port
         self._listener_store = ListenerStore(config.listener_path)
+        self._qq_source_store = QQSourceStore(
+            config.state_path.with_name(".qq-notification-sources.json"), _save_json_atomically
+        )
         self._records: dict[str, ProcessRecord] = {}
         self._operation_records: dict[str, ProcessRecord] = {}
         self._operation_threads: dict[str, threading.Thread] = {}
@@ -927,6 +932,27 @@ class ProcessSupervisor:
         with self._lock:
             self._refresh_processes_locked()
             return self._status_locked()
+
+    def qq_sources(self, payload: Optional[dict] = None, *, remove: bool = False) -> dict[str, Any]:
+        with self._lock:
+            groups = _state_summary(self.config.state_path).get("qq_groups", [])
+            try:
+                if payload is not None:
+                    if remove:
+                        self._qq_source_store.remove(payload.get("id"))
+                    else:
+                        self._qq_source_store.save(
+                            payload, {g["binding_id"] for g in groups if g["status"] == "active"}
+                        )
+                return {
+                    "rules": self._qq_source_store.read(),
+                    "groups": groups,
+                    "collector_state": "not_connected",
+                }
+            except QQSourceError as exc:
+                raise InvalidAction(str(exc)) from exc
+            except OSError as exc:
+                raise InvalidAction("QQ 监听配置保存失败，请检查目录权限和磁盘空间") from exc
 
     def listeners(self) -> list[str]:
         with self._lock:
@@ -1886,6 +1912,12 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
             self._error("控制面只接受本机请求", status=400)
             return
         path = urlsplit(self.path).path
+        if path == "/api/qq/sources":
+            try:
+                self._write_json({"ok": True, "data": self.server.supervisor.qq_sources()})
+            except ControlPlaneError as exc:
+                self._error(str(exc), status=400)
+            return
         if path == "/api/status":
             self._write_json({"ok": True, "data": self.server.supervisor.status()})
             return
@@ -1916,6 +1948,7 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
             "/": ("index.html", "text/html; charset=utf-8"),
             "/index.html": ("index.html", "text/html; charset=utf-8"),
             "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/static/qq.js": ("qq.js", "text/javascript; charset=utf-8"),
             "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
             "/static/favicon.svg": ("favicon.svg", "image/svg+xml"),
         }
@@ -1943,6 +1976,10 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
 
         path = urlsplit(self.path).path
         try:
+            if path in {"/api/qq/sources", "/api/qq/sources/remove"}:
+                data = self.server.supervisor.qq_sources(body, remove=path.endswith("/remove"))
+                self._write_json({"ok": True, "data": data})
+                return
             if path == "/api/listeners":
                 name = body.get("name")
                 if not isinstance(name, str):

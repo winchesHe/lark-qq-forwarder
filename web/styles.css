@@ -24,6 +24,54 @@
   font-synthesis: none;
 }
 
+[hidden] { display: none !important; }
+.management-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 32px;
+}
+.management-tabs button {
+  padding: 14px 22px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.management-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+.operations-grid.qq-management-grid { grid-template-columns: 1fr 1fr; }
+.qq-scope-note { margin-bottom: 24px; padding: 24px; }
+.qq-rule-form { display: grid; gap: 12px; }
+.qq-rule-form input:not([type="checkbox"]), .qq-rule-form select {
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  font: inherit;
+  color: var(--ink);
+}
+.qq-rule-form input:focus-visible, .qq-rule-form select:focus-visible {
+  outline: 3px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+.qq-enabled-label { display: flex; align-items: center; gap: 8px; }
+.qq-rule-list { display: grid; gap: 16px; }
+.qq-rule-card { padding: 18px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.qq-rule-card:first-child { padding-top: 0; }
+.qq-rule-card h3 { margin: 0 0 8px; }
+.qq-rule-card .status-badge { margin-top: 12px; }
+@media (max-width: 760px) {
+  .operations-grid.qq-management-grid { grid-template-columns: 1fr; }
+  .management-tabs button { flex: 1; }
+}
+
 * {
   box-sizing: border-box;
 }

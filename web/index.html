@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="飞书到 QQ 转发器的本机控制面" />
     <meta name="theme-color" content="#f3f4f5" />
-    <title>本机控制面 · 飞书到 QQ</title>
+    <title>本机控制面 · 消息转发</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
@@ -13,17 +13,22 @@
     <a class="skip-link" href="#main-content">跳到主要内容</a>
     <div class="app-shell">
       <header class="topbar">
-        <div class="brand-lockup" aria-label="飞书到 QQ 本机控制面">
+        <div class="brand-lockup" aria-label="消息转发本机控制面">
           <div class="brand-mark" aria-hidden="true"><span></span><span></span></div>
           <div>
             <p class="eyebrow">本机控制面</p>
-            <p class="brand-name">飞书到 QQ</p>
+            <p class="brand-name">消息转发</p>
           </div>
         </div>
         <div class="local-chip"><span class="local-dot"></span>仅本机 · 127.0.0.1</div>
       </header>
 
       <main id="main-content" class="main-content">
+        <div class="management-tabs" role="tablist" aria-label="选择监听平台">
+          <button id="lark-tab" role="tab" aria-selected="true" aria-controls="lark-management" type="button">飞书管理</button>
+          <button id="qq-tab" role="tab" aria-selected="false" aria-controls="qq-management" tabindex="-1" type="button">QQ 管理</button>
+        </div>
+        <div id="lark-management" role="tabpanel" aria-labelledby="lark-tab">
         <section class="intro-grid" aria-labelledby="page-title">
           <div>
             <p class="eyebrow accent-text">运行概览</p>
@@ -242,6 +247,43 @@
         </section>
 
         <p id="global-error" class="global-error" role="alert" hidden></p>
+        </div>
+        <div id="qq-management" role="tabpanel" aria-labelledby="qq-tab" hidden>
+          <section class="intro-grid" aria-labelledby="qq-title">
+            <div>
+              <p class="eyebrow accent-text">系统通知转发</p>
+              <h1 id="qq-title">QQ 消息，<br /><em>在这里管理。</em></h1>
+              <p class="lede">按源群和发送人配置通知转发，目标沿用已绑定的 QQ 群。保存规则后，后续采集接入将按这些规则处理。</p>
+            </div>
+            <div class="session-note"><span class="note-kicker">采集状态</span><strong>采集未接入</strong><span>当前仅管理配置，不会读取或发送 QQ 消息</span></div>
+          </section>
+          <section class="panel qq-scope-note" aria-label="通知转发范围">
+            <strong>第一版仅转发通知文本</strong>
+            <p class="operation-detail">长文可能截断，图片仅保留通知中的提示；静音、折叠或未弹出的通知可能漏掉，不支持历史补发。群名和发送人需按实际通知验证后才能启用采集。</p>
+          </section>
+          <div class="operations-grid qq-management-grid">
+            <section class="panel operation-panel" aria-labelledby="qq-rules-title">
+              <div class="panel-heading compact-heading"><div><p class="eyebrow">监听源</p><h2 id="qq-rules-title">群与发送人</h2></div><span id="qq-rule-count" class="status-badge">读取中</span></div>
+              <div id="qq-rule-list" class="qq-rule-list"><p class="empty-state">正在读取监听配置。</p></div>
+            </section>
+            <section class="panel operation-panel" aria-labelledby="qq-form-title">
+              <div class="panel-heading compact-heading"><div><p class="eyebrow">转发规则</p><h2 id="qq-form-title">新增监听规则</h2></div></div>
+              <form id="qq-rule-form" class="qq-rule-form">
+                <label for="qq-source-name">源 QQ 群名称</label>
+                <input id="qq-source-name" maxlength="80" required placeholder="与系统通知中显示的群名一致" />
+                <label for="qq-source-sender">指定发送人（可选）</label>
+                <input id="qq-source-sender" maxlength="80" placeholder="留空表示群内所有发送人" />
+                <label for="qq-targets">目标 QQ 群（可多选）</label>
+                <select id="qq-targets" multiple size="4" required aria-describedby="qq-target-note"></select>
+                <p id="qq-target-note" class="panel-footnote">正在读取已绑定的目标群。</p>
+                <label class="qq-enabled-label"><input id="qq-rule-enabled" type="checkbox" checked />规则启用（采集接入后生效）</label>
+                <div class="operation-actions"><button id="qq-save-rule" type="submit" class="button button-primary" disabled>保存规则</button><button id="qq-cancel-edit" type="button" class="button button-secondary" hidden>取消编辑</button></div>
+                <p id="qq-feedback" class="panel-footnote" role="status" aria-live="polite"></p>
+              </form>
+            </section>
+          </div>
+          <p id="qq-error" class="global-error" role="alert" hidden></p>
+        </div>
       </main>
 
       <dialog id="replay-dialog" class="replay-dialog" aria-labelledby="replay-dialog-title">
@@ -263,5 +305,6 @@
       </footer>
     </div>
     <script src="/static/app.js" defer></script>
+    <script src="/static/qq.js" defer></script>
   </body>
 </html>
