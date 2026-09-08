@@ -58,7 +58,7 @@
             </div>
           </div>
           <div id="action-feedback" class="inline-feedback" role="status" aria-live="polite"></div>
-          <p class="panel-footnote service-scope">当前服务处理飞书来源转发；QQ 自动采集尚未接入，手动发送可独立使用。</p>
+          <p id="unified-status" class="panel-footnote service-scope">飞书与 QQ 分别采集，通过统一队列转发。QQ 来源需要系统展示通知正文。</p>
         </section>
 
         <p id="global-error" class="global-error" role="alert" hidden></p>
@@ -332,7 +332,7 @@
 
       <footer class="footer">
         <span>本机工具 · 不开放局域网访问</span>
-        <span>运行记录不保存消息正文</span>
+        <span>待发内容仅在本机短期保存</span>
       </footer>
     </div>
     <script src="/static/app.js" defer></script>

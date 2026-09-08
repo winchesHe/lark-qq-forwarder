@@ -17,6 +17,8 @@ from qq_bridge import (
     BridgeError,
     ChannelCursorStore,
     DEFAULT_PROCESS_LOCK,
+    DEFAULT_STATE,
+    DEFAULT_CHANNEL_STATE,
     ForwarderProcessLock,
     LarkClient,
     StateStore,
@@ -32,8 +34,6 @@ from qq_bridge import (
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_STATE = PROJECT_DIR / ".qq-forwarder-state.json"
-DEFAULT_CHANNEL_STATE = PROJECT_DIR / ".lark-channel-cursors.json"
 DEFAULT_LARK_PROFILE = "tenant-105183"
 
 
@@ -215,7 +215,8 @@ def parse_args() -> argparse.Namespace:
 
 async def async_main() -> None:
     args = parse_args()
-    summary = await replay_channel(
+    from unified_replay import replay_unified
+    summary = await replay_unified(
         channel_name=args.channel,
         channel_state_path=args.channel_state,
         state_path=args.state,

@@ -1850,29 +1850,38 @@ async def prime_forwarder(
     contact_name: str,
     force_end: bool,
 ) -> None:
-    target = await asyncio.to_thread(lark.resolve_target, contact_name)
-    messages = await asyncio.to_thread(lark.list_messages, target.chat_id)
-    latest_position = max((message.position for message in messages), default=0)
-    offset = state.prime_input(input_path, force_end=force_end)
-    position = state.prime_lark(
-        chat_id=target.chat_id,
-        sender_id=target.sender_id,
-        latest_position=latest_position,
-        force_end=force_end,
-    )
-    print(f"转发起点已设置：通知字节位置 {offset}，飞书消息位置 {position}。")
+    with ForwarderProcessLock(state.path.with_name(".qq-forwarder.lock")):
+        target = await asyncio.to_thread(lark.resolve_target, contact_name)
+        messages = await asyncio.to_thread(lark.list_messages, target.chat_id)
+        latest_position = max((message.position for message in messages), default=0)
+        if force_end:
+            from unified_store import QUEUE_FILE, UnifiedStore
+            queue = UnifiedStore(state.path.with_name(QUEUE_FILE))
+            try:
+                queue.discard_through("lark:" + target.chat_id + ":" + (target.sender_id or "*"), latest_position)
+            finally:
+                queue.close()
+        offset = state.prime_input(input_path, force_end=force_end)
+        position = state.prime_lark(
+            chat_id=target.chat_id,
+            sender_id=target.sender_id,
+            latest_position=latest_position,
+            force_end=force_end,
+        )
+        print(f"转发起点已设置：通知字节位置 {offset}，飞书消息位置 {position}。")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="飞书 Perfecto 消息到 QQ 群转发器")
     parser.add_argument(
-        "command", choices=["check", "prime", "bind", "rename", "test", "send", "run"]
+        "command", choices=["check", "prime", "bind", "rename", "test", "send", "run", "queue-status", "queue-retry"]
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--rebind", action="store_true")
     parser.add_argument("--add", action="store_true", help="保留现有群并新增绑定")
     parser.add_argument("--binding-id")
+    parser.add_argument("--delivery-id", type=int, action="append", default=[])
     parser.add_argument("--force-end", action="store_true")
     parser.add_argument("--channel-state", type=Path, default=DEFAULT_CHANNEL_STATE)
     parser.add_argument("--lark-profile", default=DEFAULT_LARK_PROFILE)
@@ -1887,9 +1896,18 @@ def parse_args() -> argparse.Namespace:
 async def async_main() -> None:
     args = parse_args()
     state = StateStore.load(args.state)
+    if args.command in {"queue-status", "queue-retry"}:
+        from unified_service import queue_tasks, retry_queued
+        if args.command == "queue-retry":
+            retry_queued(args.state, args.delivery_id, args.binding_id)
+            print("所选队列任务已恢复；服务启动后由统一出口投递。")
+        else:
+            print(json.dumps(queue_tasks(args.state), ensure_ascii=False, indent=2))
+        return
     if args.command == "send":
         # 正文经标准输入传递，避免出现在进程参数和状态接口中。
-        await send_manual_message(state, args.binding_id, sys.stdin.read(3001))
+        from unified_service import submit_text
+        await submit_text(args.state, [args.binding_id], sys.stdin.read(3001))
         return
     lark = LarkClient(profile=args.lark_profile, binary=args.lark_cli)
 
@@ -1908,20 +1926,15 @@ async def async_main() -> None:
     elif args.command == "rename":
         await bind_group(state, rename_binding_id=args.binding_id)
     elif args.command == "test":
-        await send_test(state, binding_id=args.binding_id)
+        from unified_service import submit_text
+        bindings = [args.binding_id] if args.binding_id else [group["binding_id"] for group in state.group_bindings if group.get("status") == "active"]
+        await submit_text(args.state, bindings, "QQ 主动消息测试成功。已配置监听源的新消息将由本机自动转发。")
     elif args.command == "run":
-        target = await asyncio.to_thread(lark.resolve_target, args.lark_contact)
-        await forward_forever(
-            state,
-            args.input,
-            lark=lark,
-            target=target,
-            contact_name=args.lark_contact,
-            channel_state_path=args.channel_state,
-            listeners_path=args.listeners_file,
-            listener_cursors_path=args.listener_cursors,
-            routing_path=args.routing_file,
-        )
+        from unified_service import run_unified
+        await run_unified(state_path=args.state, input_path=args.input,
+            channels_path=args.channel_state, listeners_path=args.listeners_file,
+            listener_cursors=args.listener_cursors, routing_path=args.routing_file,
+            profile=args.lark_profile, contact=args.lark_contact, lark_client=lark)
 
 
 def main() -> None:

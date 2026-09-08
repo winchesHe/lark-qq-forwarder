@@ -191,7 +191,7 @@
           option.selected = rule.binding_ids.includes(option.value);
         });
       }
-      $("qq-feedback").textContent = "发送来源已保存，自动转发将在通知采集接入后生效。";
+      $("qq-feedback").textContent = "发送来源已保存，服务运行时对后续采集的通知生效。";
     } catch (failure) {
       $("qq-routing-feedback").textContent = failure.message || "保存失败";
     } finally {
@@ -302,7 +302,7 @@
       data = await request(path, payload);
       if (resetOnSuccess || (path.endsWith("/remove") && editingId === payload.id)) resetForm();
       if (resetOnSuccess) $("qq-source-dialog").close();
-      $("qq-feedback").textContent = "配置已保存。QQ 通知采集尚未接入，当前不会转发消息。";
+      $("qq-feedback").textContent = "配置已保存。服务运行时按规则处理后续 QQ 通知；已入队消息保留原目标。";
     } catch (failure) {
       error(failure.message || "保存失败，请稍后重试");
     } finally {

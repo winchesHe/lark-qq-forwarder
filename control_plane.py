@@ -308,6 +308,8 @@ class ControlPlaneConfig:
                 "--prompt-permission",
                 "--output",
                 str(self.input_path),
+                "--qq-spool",
+                str(self.state_path.with_name("qq-notifications")),
             ]
         raise ValueError(f"未知控制面动作：{action}")
 
@@ -849,8 +851,14 @@ class ProcessSupervisor:
         }
 
     def _status_locked(self) -> dict[str, Any]:
+        from unified_service import read_unified_status
         self._sync_binding_state_locked()
         overall_state = self._overall_state_locked()
+        unified = read_unified_status(self.config.state_path.with_name(".delivery-queue.sqlite3"))
+        queue_failure = ""
+        if overall_state == "running" and unified["state"] in {"degraded", "unavailable", "stopped"}:
+            overall_state = "degraded"
+            queue_failure = "统一投递或部分来源状态异常，请查看两路状态与队列积压"
         runtime = _state_summary(self.config.state_path)
         runtime.update(
             {
@@ -883,7 +891,7 @@ class ProcessSupervisor:
             {
                 "channel_forwarding_available": channel_replay["available"],
                 "channel_forwarding_count": ready_channel_count,
-                "forwarder_metrics": _metrics_summary(
+                "forwarder_metrics": {"available": False} if unified["state"] != "not_initialized" else _metrics_summary(
                     self.config.state_path.with_name(".qq-forwarder-metrics.json")
                 ),
             }
@@ -899,13 +907,14 @@ class ProcessSupervisor:
             "overall": {
                 "state": overall_state,
                 "label": STATE_LABELS[overall_state],
-                "failure_message": self._failure_message,
+                "failure_message": self._failure_message or queue_failure,
             },
             "processes": [
                 self._process_snapshot_locked(ROLE_PROBE),
                 self._process_snapshot_locked(ROLE_FORWARDER),
             ],
             "runtime": runtime,
+            "unified": unified,
             "check": dict(self._last_check),
             "operations": {
                 "binding": binding,
@@ -934,6 +943,7 @@ class ProcessSupervisor:
             return self._status_locked()
 
     def qq_sources(self, payload: Optional[dict] = None, *, remove: bool = False, routing: bool = False) -> dict[str, Any]:
+        from unified_service import read_unified_status
         with self._lock:
             groups = _state_summary(self.config.state_path).get("qq_groups", [])
             try:
@@ -952,7 +962,7 @@ class ProcessSupervisor:
                 return {
                     "rules": self._qq_source_store.read(),
                     "groups": groups,
-                    "collector_state": "not_connected",
+                    "collector_state": read_unified_status(self.config.state_path.with_name(".delivery-queue.sqlite3")).get("sources", {}).get("qq", {}).get("state", "stopped"),
                 }
             except QQSourceError as exc:
                 raise InvalidAction(str(exc)) from exc
@@ -1641,7 +1651,7 @@ class ProcessSupervisor:
         except Exception:
             return
         try:
-            record.process.wait(timeout=3)
+            record.process.wait(timeout=35 if record.role == ROLE_FORWARDER else 3)
         except subprocess.TimeoutExpired:
             try:
                 record.process.kill()

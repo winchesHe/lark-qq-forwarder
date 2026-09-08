@@ -87,4 +87,43 @@ final class NotificationCoreTests: XCTestCase {
     XCTAssertNotEqual(first.fingerprint, different.fingerprint)
     XCTAssertEqual(first.fingerprint.count, 16)
   }
+
+  func testQQIsOptInAndKeepsNotificationFields() {
+    XCTAssertNil(NotificationParser.parse(description: nil, texts: ["QQ", "演示群", "张三：消息"]))
+    let result = NotificationParser.parse(description: nil, texts: ["QQ", "演示群", "张三：消息"], allowedApps: ["qq"])
+    XCTAssertEqual(result?.title, "演示群")
+    XCTAssertEqual(result?.body, "张三：消息")
+  }
+
+  func testQQTrackerBaselinesExistingNotificationsAndDeduplicatesVisibleNode() {
+    let notification = ParsedNotification(app: "QQ", title: "演示群", body: "正文", subtitle: "", rawTexts: [])
+    var tracker = QQNotificationTracker()
+    XCTAssertEqual(tracker.observe(["node-a": notification], emit: false).count, 0)
+    XCTAssertEqual(tracker.observe(["node-a": notification], emit: true).count, 0)
+    XCTAssertEqual(tracker.observe(["node-a": notification, "node-b": notification], emit: true).count, 1)
+    XCTAssertEqual(tracker.observe(["node-a": notification, "node-b": notification], emit: true).count, 0)
+  }
+
+  func testQQTrackerKeepsIdenticalMessagesOnDifferentNodesAndDoesNotCaptureLark() {
+    let qq = ParsedNotification(app: "QQ", title: "演示群", body: "同文", subtitle: "", rawTexts: [])
+    let lark = ParsedNotification(app: "Lark", title: "演示群", body: "同文", subtitle: "", rawTexts: [])
+    var tracker = QQNotificationTracker()
+    let events = tracker.observe(["a": qq, "b": qq, "c": lark], emit: true)
+    XCTAssertEqual(events.count, 2)
+    XCTAssertNotEqual(events[0].event_id, events[1].event_id)
+    XCTAssertEqual(events[0].bundle_id, "com.tencent.qq")
+    XCTAssertEqual(events[0].body, "同文")
+  }
+
+  func testQQTrackerEmitsChangedNodeContentAndCanEncodeEvent() throws {
+    let notification = ParsedNotification(app: "QQ", title: "演示群", body: "正文", subtitle: "发送人", rawTexts: [])
+    var tracker = QQNotificationTracker()
+    _ = tracker.observe(["node:old-fingerprint": notification], emit: true)
+    let events = tracker.observe(["node:new-fingerprint": notification], emit: true)
+    XCTAssertEqual(events.count, 1)
+    let decoded = try JSONDecoder().decode(QQNotificationEvent.self, from: JSONEncoder().encode(events[0]))
+    XCTAssertEqual(decoded, events[0])
+    XCTAssertEqual(decoded.schema_version, 1)
+    XCTAssertEqual(decoded.type, "qq_notification")
+  }
 }

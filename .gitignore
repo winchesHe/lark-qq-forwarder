@@ -20,3 +20,6 @@ __pycache__/
 .lark-listeners.json
 .replay-progress.json
 lark-notifications.jsonl
+.delivery-queue.sqlite3*
+qq-notifications/
+.qq-notification-sources.json

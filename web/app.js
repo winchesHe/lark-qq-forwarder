@@ -203,6 +203,13 @@
     if (state === "degraded") detail = overall.failure_message || "只有部分进程在运行，请检查子进程状态。";
     if (state === "failed") detail = overall.failure_message || "启动流程未完成，请运行只读检查后重试。";
     setText(elements.overallDetail, detail);
+    const unified = data.unified || {};
+    const labels = { running: "采集中", starting: "准备中", stopped: "已停止", degraded: "需检查", failed: "读取失败", backpressure: "等待队列容量" };
+    const sources = unified.sources || {};
+    const queue = unified.queue || {};
+    const sourceLabel = name => labels[(sources[name] || {}).state] || "尚未启动";
+    setText(document.querySelector("#unified-status"),
+      `飞书：${sourceLabel("lark")} · QQ：${sourceLabel("qq")} · 待投递 ${queue.pending || 0} · 发送中 ${queue.active || 0} · 受阻 ${queue.blocked || 0} · 暂停群 ${queue.paused_targets || 0}。QQ 来源需要系统展示通知正文。`);
 
     elements.startButton.disabled = busy || state === "running" || state === "starting" || state === "stopping";
     elements.stopButton.disabled = busy || state === "stopped" || state === "stopping";

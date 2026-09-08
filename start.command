@@ -22,7 +22,7 @@ if [[ ! -x "$PYTHON" ]]; then
   /opt/homebrew/bin/python3.12 -m venv "$VENV_DIR"
   "$VENV_DIR/bin/pip" install -r "$PROJECT_DIR/requirements-qq.txt"
 fi
-if [[ ! -x "$PROJECT_DIR/.build/release/lark-notification-probe" ]]; then /usr/bin/swift build -c release; fi
+/usr/bin/swift build -c release
 "$PYTHON" "$PROJECT_DIR/control_plane.py" --port "$CONTROL_PORT" &
 CONTROL_PID=$!
 cleanup() { kill "$CONTROL_PID" 2>/dev/null || true; }

@@ -137,6 +137,26 @@ def wait_for(predicate: object, timeout: float = 1.0) -> None:
 
 
 class ProcessSupervisorTests(unittest.TestCase):
+    def test_live_processes_do_not_hide_unified_collector_failure(self) -> None:
+        from unified_store import QUEUE_FILE, UnifiedStore
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            supervisor = ProcessSupervisor(make_config(root), process_factory=FakeProcessFactory())
+            store = UnifiedStore(root / QUEUE_FILE)
+            try:
+                store.set_status("service", "running")
+                store.set_status("lark", "running")
+                store.set_status("qq", "failed", "通知无法读取")
+                supervisor.start()
+                wait_for(lambda: supervisor.status()["overall"]["state"] == "degraded")
+                status = supervisor.status()
+                self.assertEqual(status["unified"]["sources"]["qq"]["state"], "failed")
+                self.assertFalse(status["runtime"]["forwarder_metrics"]["available"])
+                self.assertTrue(status["overall"]["failure_message"])
+            finally:
+                supervisor.close()
+                store.close()
+
     def test_replay_accepts_only_configured_channel_and_can_be_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

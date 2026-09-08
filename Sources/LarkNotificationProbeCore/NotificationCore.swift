@@ -169,6 +169,45 @@ public enum StableFingerprint {
   }
 }
 
+public struct QQNotificationEvent: Codable, Equatable, Sendable {
+  public let schema_version: Int
+  public let type: String
+  public let event_id: String
+  public let bundle_id: String
+  public let observed_at: String
+  public let title: String
+  public let body: String
+  public let subtitle: String
+
+  public init(notification: ParsedNotification) {
+    schema_version = 1
+    type = "qq_notification"
+    event_id = UUID().uuidString
+    bundle_id = "com.tencent.qq"
+    observed_at = ISO8601DateFormatter().string(from: Date())
+    title = notification.title
+    body = notification.body
+    subtitle = notification.subtitle
+  }
+}
+
+public struct QQNotificationTracker {
+  private var visibleKeys = Set<String>()
+
+  public init() {}
+
+  public mutating func observe(_ notifications: [String: ParsedNotification], emit: Bool) -> [QQNotificationEvent] {
+    let qq = notifications.filter { $0.value.app.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "qq" }
+    let currentKeys = Set(qq.keys)
+    defer { visibleKeys = currentKeys }
+    guard emit else { return [] }
+    // 仅对仍可见的同一通知节点去重；不同节点的同文消息必须保留。
+    return currentKeys.subtracting(visibleKeys).sorted().compactMap { key in
+      qq[key].map { QQNotificationEvent(notification: $0) }
+    }
+  }
+}
+
 extension Array {
   fileprivate subscript(safe index: Index) -> Element? {
     indices.contains(index) ? self[index] : nil

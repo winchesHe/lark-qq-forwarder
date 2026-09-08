@@ -30,7 +30,7 @@ class QQSourceTests(unittest.TestCase):
     def test_save_edit_disable_reload_remove_without_sending(self):
         result = self.supervisor.qq_sources(self.rule)
         rule = result["rules"][0]
-        self.assertEqual(result["collector_state"], "not_connected")
+        self.assertEqual(result["collector_state"], "stopped")
         self.assertNotIn("private-openid", json.dumps(result))
         restored = ProcessSupervisor(self.config, process_factory=self.factory)
         self.assertEqual(restored.qq_sources()["rules"], [rule])

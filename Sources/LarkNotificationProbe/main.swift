@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import Darwin
 import LarkNotificationProbeCore
 
 private enum ProbeError: Error, CustomStringConvertible {
@@ -26,6 +27,7 @@ private enum ProbeError: Error, CustomStringConvertible {
 private struct Configuration {
   var outputPath = FileManager.default.currentDirectoryPath + "/lark-notifications.jsonl"
   var allowedApps = NotificationParser.defaultAllowedApps
+  var qqSpoolPath: String?
   var includeExisting = false
   var promptPermission = false
   var debug = false
@@ -51,6 +53,13 @@ private struct Configuration {
           throw ProbeError.invalidArgument("--app-name 后缺少应用名")
         }
         configuration.allowedApps.insert(arguments[index].lowercased())
+      case "--qq-spool":
+        index += 1
+        guard index < arguments.count else {
+          throw ProbeError.invalidArgument("--qq-spool 后缺少目录路径")
+        }
+        configuration.qqSpoolPath = NSString(string: arguments[index]).expandingTildeInPath
+        configuration.allowedApps.insert("qq")
       case "--duration":
         index += 1
         guard index < arguments.count,
@@ -90,6 +99,7 @@ private struct Configuration {
 
       选项：
         --output <路径>          JSONL 输出文件
+        --qq-spool <目录>        同时将 QQ 通知暂存到私有待处理目录
         --duration <秒>          到时自动退出
         --include-existing       启动时也输出当前已有通知
         --prompt-permission      请求 macOS 辅助功能权限
@@ -99,6 +109,48 @@ private struct Configuration {
         --help                   显示帮助
       """
     )
+  }
+}
+
+private final class QQSpoolWriter {
+  private let directory: URL
+  private let lock: Int32
+  private var sequence: UInt64 = 0
+
+  init(path: String) throws {
+    directory = URL(fileURLWithPath: path)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+    lock = Darwin.open(directory.appendingPathComponent(".collector.lock").path, O_CREAT | O_RDWR, 0o600)
+    guard lock >= 0 else { throw ProbeError.outputOpenFailed(path) }
+    guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+      Darwin.close(lock)
+      throw ProbeError.invalidArgument("已有 QQ 通知监听器使用此待处理目录")
+    }
+  }
+
+  deinit { Darwin.close(lock) }
+
+  func append(_ event: QQNotificationEvent) throws {
+    let rulesURL = directory.deletingLastPathComponent().appendingPathComponent(".qq-notification-sources.json")
+    guard FileManager.default.fileExists(atPath: rulesURL.path) else { return }
+    let object = try JSONSerialization.jsonObject(with: Data(contentsOf: rulesURL))
+    guard let config = object as? [String: Any], let rules = config["rules"] as? [[String: Any]] else {
+      throw ProbeError.invalidArgument("QQ 监听规则格式无效")
+    }
+    guard rules.contains(where: { ($0["enabled"] as? Bool) == true && ($0["group_name"] as? String) == event.title.trimmingCharacters(in: .whitespacesAndNewlines) }) else { return }
+    let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    guard files.count < 10000 else {
+      throw ProbeError.invalidArgument("QQ 通知积压达到上限，已停止采集以避免静默丢弃")
+    }
+    sequence += 1
+    let stamp = UInt64(Date().timeIntervalSince1970 * 1_000_000)
+    let name = String(format: "%020llu-%010llu-", stamp, sequence) + event.event_id + ".json"
+    let target = directory.appendingPathComponent(name)
+    let data = try JSONEncoder().encode(event)
+    try data.write(to: target, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
   }
 }
 
@@ -165,6 +217,8 @@ private final class JSONLWriter {
 private final class NotificationProbe {
   private let configuration: Configuration
   private let writer: JSONLWriter
+  private let qqWriter: QQSpoolWriter?
+  private var qqTracker = QQNotificationTracker()
   private var observers: [pid_t: AXObserver] = [:]
   private var scanScheduled = false
   private var workspaceObserver: NSObjectProtocol?
@@ -190,6 +244,7 @@ private final class NotificationProbe {
   init(configuration: Configuration) throws {
     self.configuration = configuration
     writer = try JSONLWriter(path: configuration.outputPath)
+    qqWriter = try configuration.qqSpoolPath.map { try QQSpoolWriter(path: $0) }
   }
 
   func run() throws {
@@ -356,6 +411,14 @@ private final class NotificationProbe {
       }
     }
 
+    let qqEvents = qqTracker.observe(capturedByKey, emit: shouldEmit)
+    do {
+      for event in qqEvents { try qqWriter?.append(event) }
+    } catch {
+      log("QQ 通知保存失败，监听器停止；请检查磁盘、权限与积压量", always: true)
+      exit(1)
+    }
+
     guard shouldEmit else {
       return
     }
@@ -363,6 +426,7 @@ private final class NotificationProbe {
     var emittedTitles = Set<String>()
     for key in capturedByKey.keys.sorted() {
       guard let notification = capturedByKey[key],
+        notification.app.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "qq",
         emittedTitles.insert(notification.title).inserted
       else {
         continue
