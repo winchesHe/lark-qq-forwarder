@@ -933,12 +933,17 @@ class ProcessSupervisor:
             self._refresh_processes_locked()
             return self._status_locked()
 
-    def qq_sources(self, payload: Optional[dict] = None, *, remove: bool = False) -> dict[str, Any]:
+    def qq_sources(self, payload: Optional[dict] = None, *, remove: bool = False, routing: bool = False) -> dict[str, Any]:
         with self._lock:
             groups = _state_summary(self.config.state_path).get("qq_groups", [])
             try:
                 if payload is not None:
-                    if remove:
+                    if routing:
+                        self._qq_source_store.route_group(
+                            payload.get("binding_id"), payload.get("source_ids"),
+                            {g["binding_id"] for g in groups if g["status"] == "active"},
+                        )
+                    elif remove:
                         self._qq_source_store.remove(payload.get("id"))
                     else:
                         self._qq_source_store.save(
@@ -1019,16 +1024,24 @@ class ProcessSupervisor:
         with self._lock:
             self._server_port = port
 
-    def _spawn(self, role: str, command: list[str]) -> ProcessRecord:
+    def _spawn(self, role: str, command: list[str], input_text: Optional[str] = None) -> ProcessRecord:
         try:
             process = self._process_factory(
                 command,
                 cwd=str(self.config.project_dir),
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            if input_text is not None:
+                try:
+                    process.stdin.write(input_text.encode("utf-8"))
+                    process.stdin.close()
+                except OSError:
+                    process.terminate()
+                    process.wait()
+                    raise
         except FileNotFoundError as exc:
             raise StartupFailure("启动所需的本地程序不存在") from exc
         except PermissionError as exc:
@@ -1070,11 +1083,12 @@ class ProcessSupervisor:
         requested_event: str,
         requested_message: str,
         start_failure_message: str,
+        input_text: Optional[str] = None,
     ) -> dict[str, Any]:
         self._begin_operation_locked(operation_name, mode)
         self._record_event_locked(requested_event, requested_message)
         try:
-            record = self._spawn(role, command)
+            record = self._spawn(role, command, input_text=input_text)
         except ControlPlaneError:
             self._finish_operation_locked(
                 operation_name,
@@ -1151,6 +1165,24 @@ class ProcessSupervisor:
                 return
 
             if operation_name == OP_TEST:
+                if mode == "qq_message":
+                    if cancelled:
+                        state = "cancelled"
+                    elif exit_code == 0:
+                        state = "succeeded"
+                    else:
+                        state = "failed"
+                    message = {
+                        "cancelled": "主动发送已取消；如已投递，消息不会撤回",
+                        "succeeded": "消息已发送到选定 QQ 群",
+                        "failed": "发送未成功，请检查群绑定和主动发言权限；重试前先确认群内是否已收到",
+                    }[state]
+                    self._finish_operation_locked(
+                        OP_TEST, state, effect=message if state == "succeeded" else None,
+                        failure_message=message if state != "succeeded" else None,
+                    )
+                    self._record_event_locked("qq_message_" + state, message)
+                    return
                 if cancelled:
                     self._finish_operation_locked(OP_TEST, "cancelled")
                     self._record_event_locked(
@@ -1334,6 +1366,33 @@ class ProcessSupervisor:
                 daemon=True,
             ).start()
             return self._status_locked()
+
+    def send_qq_message(self, binding_id: str, text: str, confirmed: bool) -> dict[str, Any]:
+        if confirmed is not True:
+            raise ConfirmationRequired("请确认目标群与消息正文后再发送")
+        try:
+            text_size = len(text.encode("utf-8")) if isinstance(text, str) else 0
+        except UnicodeError as exc:
+            raise InvalidAction("消息包含无效字符") from exc
+        if not isinstance(text, str) or not text.strip() or text_size > 3000:
+            raise InvalidAction("消息不能为空，且不能超过 3000 字节（约 1000 个汉字）")
+        with self._lock:
+            self._refresh_processes_locked()
+            self._ensure_action_available_locked()
+            groups = _state_summary(self.config.state_path).get("qq_groups", [])
+            if not isinstance(binding_id, str) or binding_id not in {
+                group["binding_id"] for group in groups if group["status"] == "active"
+            }:
+                raise InvalidAction("请选择一个有效的目标 QQ 群")
+            return self._start_operation_locked(
+                operation_name=OP_TEST, role=ROLE_TEST, mode="qq_message",
+                command=[str(self.config.python_executable), str(self.config.bridge_script),
+                         "send", "--state", str(self.config.state_path), "--binding-id", binding_id],
+                input_text=text,
+                requested_event="qq_message_requested",
+                requested_message="已接受指定 QQ 群的主动发送请求",
+                start_failure_message="主动发送进程未能启动，请检查 Python 环境",
+            )
 
     def test(self, binding_id: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
@@ -1882,7 +1941,7 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_small_body(self) -> Optional[dict[str, Any]]:
+    def _read_small_body(self, max_length: int = 1024) -> Optional[dict[str, Any]]:
         value = self.headers.get("Content-Length", "0")
         try:
             length = int(value)
@@ -1890,7 +1949,7 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
             self._error("请求体无效", status=400)
             self.close_connection = True
             return None
-        if length < 0 or length > 1024:
+        if length < 0 or length > max_length:
             self._error("请求体过大", status=413)
             self.close_connection = True
             return None
@@ -1970,14 +2029,23 @@ class ControlPlaneRequestHandler(http.server.BaseHTTPRequestHandler):
             return
         if not self._authorized_write():
             return
-        body = self._read_small_body()
+        path = urlsplit(self.path).path
+        qq_paths = {"/api/qq/send", "/api/qq/routing", "/api/qq/sources", "/api/qq/sources/remove"}
+        body = self._read_small_body(32768 if path in qq_paths else 1024)
         if body is None:
             return
 
-        path = urlsplit(self.path).path
         try:
-            if path in {"/api/qq/sources", "/api/qq/sources/remove"}:
-                data = self.server.supervisor.qq_sources(body, remove=path.endswith("/remove"))
+            if path == "/api/qq/send":
+                status = self.server.supervisor.send_qq_message(
+                    body.get("binding_id"), body.get("text"), body.get("confirmed"),
+                )
+                self._write_json({"ok": True, "data": status})
+                return
+            if path in {"/api/qq/sources", "/api/qq/sources/remove", "/api/qq/routing"}:
+                data = self.server.supervisor.qq_sources(
+                    body, remove=path.endswith("/remove"), routing=path.endswith("/routing")
+                )
                 self._write_json({"ok": True, "data": data})
                 return
             if path == "/api/listeners":

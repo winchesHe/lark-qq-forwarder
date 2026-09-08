@@ -48,10 +48,10 @@ class QQSourceStore:
         if not isinstance(rule.get("enabled"), bool):
             raise QQSourceError("规则启用状态无效")
         targets = rule.get("binding_ids")
-        if (not isinstance(targets, list) or not 1 <= len(targets) <= 20
+        if (not isinstance(targets, list) or not 0 <= len(targets) <= 20
                 or not all(isinstance(item, str) and item for item in targets)
                 or len(set(targets)) != len(targets)):
-            raise QQSourceError("请选择 1 到 20 个不重复的目标群")
+            raise QQSourceError("最多选择 20 个不重复的目标群")
 
     def save(self, payload: dict, active_ids: set[str]) -> list[dict]:
         self.validate(payload)
@@ -86,3 +86,21 @@ class QQSourceStore:
         rules = [r for r in rules if r["id"] != rule_id]
         self.save_json(self.path, {"schema_version": 1, "rules": rules})
         return rules
+
+    def route_group(self, binding_id: str, source_ids: list[str], active_ids: set[str]) -> None:
+        if not isinstance(binding_id, str) or binding_id not in active_ids:
+            raise QQSourceError("目标群已移除或未启用，请重新选择")
+        if (not isinstance(source_ids, list)
+                or not all(isinstance(value, str) for value in source_ids)
+                or len(set(source_ids)) != len(source_ids)):
+            raise QQSourceError("发送来源选择无效")
+        rules = self.read()
+        if not set(source_ids).issubset({rule["id"] for rule in rules}):
+            raise QQSourceError("监听源已变更，请重新打开来源管理")
+        for rule in rules:
+            targets = [value for value in rule["binding_ids"] if value != binding_id]
+            if rule["id"] in source_ids:
+                targets.append(binding_id)
+            rule["binding_ids"] = targets
+            self.validate(rule)
+        self.save_json(self.path, {"schema_version": 1, "rules": rules})

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from datetime import datetime
 import fcntl
 import json
@@ -1340,6 +1341,20 @@ async def bind_group(
         await http_client.aclose()
 
 
+async def send_manual_message(state: StateStore, binding_id: str, text: str) -> None:
+    if not binding_id or not text.strip() or len(text.encode("utf-8")) > 3000:
+        raise BridgeError("目标群和消息正文无效")
+    groups = [group for group in state.group_bindings
+              if group.get("binding_id") == binding_id and group.get("status") == "active"]
+    if len(groups) != 1:
+        raise BridgeError("指定 QQ 群不存在或未启用")
+    api, http_client = await create_api()
+    try:
+        await send_group_text(api, groups[0]["group_openid"], text)
+    finally:
+        await http_client.aclose()
+
+
 async def send_test(state: StateStore, binding_id: Optional[str] = None) -> None:
     if binding_id:
         group_openids = [group["group_openid"] for group in state.group_bindings if group.get("binding_id") == binding_id and group.get("status") != "disabled"]
@@ -1851,7 +1866,7 @@ async def prime_forwarder(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="飞书 Perfecto 消息到 QQ 群转发器")
     parser.add_argument(
-        "command", choices=["check", "prime", "bind", "rename", "test", "run"]
+        "command", choices=["check", "prime", "bind", "rename", "test", "send", "run"]
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
@@ -1872,6 +1887,10 @@ def parse_args() -> argparse.Namespace:
 async def async_main() -> None:
     args = parse_args()
     state = StateStore.load(args.state)
+    if args.command == "send":
+        # 正文经标准输入传递，避免出现在进程参数和状态接口中。
+        await send_manual_message(state, args.binding_id, sys.stdin.read(3001))
+        return
     lark = LarkClient(profile=args.lark_profile, binary=args.lark_cli)
 
     if args.command == "check":
