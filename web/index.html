@@ -24,16 +24,11 @@
       </header>
 
       <main id="main-content" class="main-content">
-        <div class="management-tabs" role="tablist" aria-label="选择监听平台">
-          <button id="lark-tab" role="tab" aria-selected="true" aria-controls="lark-management" type="button">飞书管理</button>
-          <button id="qq-tab" role="tab" aria-selected="false" aria-controls="qq-management" tabindex="-1" type="button">QQ 管理</button>
-        </div>
-        <div id="lark-management" role="tabpanel" aria-labelledby="lark-tab">
-        <section class="intro-grid" aria-labelledby="page-title">
+        <section class="intro-grid service-intro" aria-labelledby="page-title">
           <div>
             <p class="eyebrow accent-text">运行概览</p>
-            <h1 id="page-title">安静地看住<br /><em>这一条转发链路。</em></h1>
-            <p class="lede">把绑定、主动测试、游标和多个频道自动转发放到一个安全的本机页面里。消息正文仍留在原有转发流程中，不会出现在这里。</p>
+            <h1 id="page-title">消息转发服务</h1>
+            <p class="lede">统一查看运行状态和启停服务，在下方切换飞书与 QQ 的来源配置。</p>
           </div>
           <div class="session-note">
             <span class="note-kicker">本次会话</span>
@@ -46,7 +41,7 @@
           <div class="panel-heading">
             <div>
               <p class="eyebrow">总状态</p>
-              <h2 id="overall-title">转发链路</h2>
+              <h2 id="overall-title">服务状态</h2>
             </div>
             <span id="overall-badge" class="status-badge is-loading">读取中</span>
           </div>
@@ -57,14 +52,88 @@
               <p id="overall-detail" class="status-detail">控制面正在建立连接。</p>
             </div>
             <div class="action-row" aria-label="进程操作">
-              <button id="start-button" class="button button-primary" type="button">启动</button>
-              <button id="stop-button" class="button button-secondary" type="button">停止</button>
-              <button id="restart-button" class="button button-secondary" type="button">重启</button>
+              <button id="start-button" class="button button-primary" type="button">启动服务</button>
+              <button id="stop-button" class="button button-secondary" type="button">停止服务</button>
+              <button id="restart-button" class="button button-secondary" type="button">重启服务</button>
             </div>
           </div>
           <div id="action-feedback" class="inline-feedback" role="status" aria-live="polite"></div>
+          <p class="panel-footnote service-scope">当前服务处理飞书来源转发；QQ 自动采集尚未接入，手动发送可独立使用。</p>
         </section>
 
+        <p id="global-error" class="global-error" role="alert" hidden></p>
+        <details class="service-diagnostics">
+          <summary>运行详情与故障排查</summary>
+        <section class="panel recovery-panel" aria-labelledby="recovery-title">
+          <div class="panel-heading compact-heading">
+            <div>
+              <p class="eyebrow">故障引导</p>
+              <h2 id="recovery-title">遇到问题怎么办</h2>
+            </div>
+            <span class="panel-meta">不提供单条消息重发</span>
+          </div>
+          <div id="recovery-list" class="recovery-list" aria-live="polite">
+            <div class="empty-state">正在读取恢复建议。</div>
+          </div>
+          <div class="recovery-actions">
+            <button id="recovery-check-button" class="button button-secondary" type="button">检查权限与连接</button>
+            <button id="recovery-restart-button" class="button button-primary" type="button">重启转发</button>
+          </div>
+        </section>
+
+        <div class="content-grid">
+          <section class="panel process-panel" aria-labelledby="process-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">运行单元</p>
+                <h2 id="process-title">子进程状态</h2>
+              </div>
+              <span class="panel-meta">由控制面启动</span>
+            </div>
+            <div id="process-list" class="process-list" aria-live="polite">
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+            </div>
+          </section>
+
+          <section class="panel runtime-panel" aria-labelledby="runtime-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="eyebrow">只读信息</p>
+                <h2 id="runtime-title">运行准备</h2>
+              </div>
+              <button id="check-button" class="text-button" type="button">运行只读检查 <span aria-hidden="true">↗</span></button>
+            </div>
+            <div id="runtime-list" class="runtime-list">
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+            </div>
+            <p class="panel-footnote">检查只验证本地配置、飞书会话和 QQ 网关连接，不发送消息。</p>
+          </section>
+        </div>
+
+        <section class="panel events-panel" aria-labelledby="events-title">
+          <div class="panel-heading compact-heading">
+            <div>
+              <p class="eyebrow">结构化记录</p>
+              <h2 id="events-title">当前会话事件</h2>
+            </div>
+            <span class="panel-meta">仅显示脱敏状态</span>
+          </div>
+          <div id="events-list" class="events-list" aria-live="polite">
+            <div class="empty-state">正在读取当前会话事件。</div>
+          </div>
+        </section>
+
+        </details>
+
+        <div class="management-tabs" role="tablist" aria-label="选择监听平台">
+          <button id="lark-tab" role="tab" aria-selected="true" aria-controls="lark-management" type="button">飞书管理</button>
+          <button id="qq-tab" role="tab" aria-selected="false" aria-controls="qq-management" tabindex="-1" type="button">QQ 管理</button>
+        </div>
+        <div id="lark-management" role="tabpanel" aria-labelledby="lark-tab">
         <div class="operations-grid">
           <section class="panel operation-panel" aria-labelledby="binding-title">
             <div class="panel-heading compact-heading">
@@ -183,88 +252,8 @@
           <p id="replay-summary" class="panel-footnote">频道自动转发状态正在读取。</p>
         </section>
 
-        <section class="panel recovery-panel" aria-labelledby="recovery-title">
-          <div class="panel-heading compact-heading">
-            <div>
-              <p class="eyebrow">故障引导</p>
-              <h2 id="recovery-title">遇到问题怎么办</h2>
-            </div>
-            <span class="panel-meta">不提供单条消息重发</span>
-          </div>
-          <div id="recovery-list" class="recovery-list" aria-live="polite">
-            <div class="empty-state">正在读取恢复建议。</div>
-          </div>
-          <div class="recovery-actions">
-            <button id="recovery-check-button" class="button button-secondary" type="button">检查权限与连接</button>
-            <button id="recovery-restart-button" class="button button-primary" type="button">重启转发</button>
-          </div>
-        </section>
-
-        <div class="content-grid">
-          <section class="panel process-panel" aria-labelledby="process-title">
-            <div class="panel-heading compact-heading">
-              <div>
-                <p class="eyebrow">运行单元</p>
-                <h2 id="process-title">子进程状态</h2>
-              </div>
-              <span class="panel-meta">由控制面启动</span>
-            </div>
-            <div id="process-list" class="process-list" aria-live="polite">
-              <div class="skeleton-row"></div>
-              <div class="skeleton-row"></div>
-            </div>
-          </section>
-
-          <section class="panel runtime-panel" aria-labelledby="runtime-title">
-            <div class="panel-heading compact-heading">
-              <div>
-                <p class="eyebrow">只读信息</p>
-                <h2 id="runtime-title">运行准备</h2>
-              </div>
-              <button id="check-button" class="text-button" type="button">运行只读检查 <span aria-hidden="true">↗</span></button>
-            </div>
-            <div id="runtime-list" class="runtime-list">
-              <div class="skeleton-line"></div>
-              <div class="skeleton-line short"></div>
-              <div class="skeleton-line"></div>
-              <div class="skeleton-line short"></div>
-            </div>
-            <p class="panel-footnote">检查只验证本地配置、飞书会话和 QQ 网关连接，不发送消息。</p>
-          </section>
-        </div>
-
-        <section class="panel events-panel" aria-labelledby="events-title">
-          <div class="panel-heading compact-heading">
-            <div>
-              <p class="eyebrow">结构化记录</p>
-              <h2 id="events-title">当前会话事件</h2>
-            </div>
-            <span class="panel-meta">仅显示脱敏状态</span>
-          </div>
-          <div id="events-list" class="events-list" aria-live="polite">
-            <div class="empty-state">正在读取当前会话事件。</div>
-          </div>
-        </section>
-
-        <p id="global-error" class="global-error" role="alert" hidden></p>
         </div>
         <div id="qq-management" role="tabpanel" aria-labelledby="qq-tab" hidden>
-          <section class="intro-grid" aria-labelledby="qq-title">
-            <div>
-              <p class="eyebrow accent-text">运行概览</p>
-              <h1 id="qq-title">QQ 通知<br /><em>转发到指定群。</em></h1>
-              <p class="lede">在群旁边管理发送来源，在下方添加监听源。主动发消息可单独操作。</p>
-            </div>
-            <div class="session-note"><span class="note-kicker">消息来源</span><strong>QQ 系统通知</strong><span>仅转发通知文本，不支持历史补发</span></div>
-          </section>
-          <section class="overview-panel panel" aria-labelledby="qq-overall-title">
-            <div class="panel-heading"><div><p class="eyebrow">总状态</p><h2 id="qq-overall-title">转发链路</h2></div><span class="status-badge">待接入</span></div>
-            <div class="overview-body">
-              <div class="status-orb" aria-hidden="true"><span></span></div>
-              <div class="status-copy"><p class="status-title">自动转发尚未接入</p><p class="status-detail">可以先配置监听源和目标群。主动发消息可独立使用。</p></div>
-            </div>
-            <p class="panel-footnote">通知可能被折叠或截断，静音群可能没有通知；图片只保留通知提示。</p>
-          </section>
           <div class="operations-grid qq-management-grid">
             <section class="panel operation-panel" aria-labelledby="qq-rules-title">
               <div class="panel-heading compact-heading"><div><p class="eyebrow">监听管理</p><h2 id="qq-rules-title">监听源与 QQ 群</h2></div><span id="qq-rule-count" class="status-badge">读取中</span></div>

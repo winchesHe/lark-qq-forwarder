@@ -196,8 +196,8 @@
     elements.statusOrb.className = `status-orb ${className}`.trim();
     setText(elements.overallLabel, label);
 
-    let detail = "两个本地进程都未运行。";
-    if (state === "running") detail = "通知监听和已配置的飞书来源转发都在运行。";
+    let detail = "服务尚未启动。";
+    if (state === "running") detail = "服务正在处理已接入的消息来源。";
     if (state === "starting") detail = "正在准备游标并启动本地进程。";
     if (state === "stopping") detail = "正在停止由本控制面启动的进程。";
     if (state === "degraded") detail = overall.failure_message || "只有部分进程在运行，请检查子进程状态。";
