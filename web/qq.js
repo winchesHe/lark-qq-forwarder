@@ -52,6 +52,7 @@
   function error(message) {
     $("qq-error").textContent = message;
     $("qq-error").hidden = !message;
+    $("qq-source-error").textContent = message;
   }
 
   async function request(path, payload) {
@@ -68,7 +69,6 @@
   }
 
   function render() {
-    const groups = new Map(data.groups.map(group => [group.binding_id, group]));
     const active = data.groups.filter(group => group.status === "active");
     const signature = JSON.stringify(active);
     if (signature !== targetSignature) {
@@ -92,9 +92,10 @@
       ? "按住 ⌘ / Ctrl 可多选。目标绑定与飞书管理共用，转发规则独立保存。"
       : "暂无可用目标群。可以先保存监听源，再到「飞书管理」绑定目标群。";
     $("qq-save-rule").disabled = busy || !ready || !token;
+    $("qq-add-source").disabled = busy || !ready || !token;
     renderSending();
     renderGroups();
-    $("qq-rule-count").textContent = data.rules.length + " 条规则";
+    $("qq-rule-count").textContent = data.rules.length + " 个监听源";
     const nextRuleSignature = JSON.stringify([data.rules, data.groups, busy, ready]);
     if (nextRuleSignature === ruleSignature) return;
     ruleSignature = nextRuleSignature;
@@ -103,23 +104,20 @@
       $("qq-rule-list").append(node("p", "empty-state", "还没有监听源。先添加源 QQ 群，再为目标群分配发送来源。"));
     }
     data.rules.forEach(rule => {
-      const row = node("article", "qq-rule-card");
-      row.append(node("h3", "", rule.group_name));
-      row.append(node("p", "panel-footnote", rule.sender ? "仅监听：" + rule.sender : "群内所有发送人"));
-      row.append(node("p", "operation-detail", "转发至：" + rule.binding_ids.map(id => {
-        const group = groups.get(id);
-        if (!group) return "目标已移除";
-        return group.label + (group.status === "active" ? "" : "（不可用）");
-      }).join("、") + (rule.binding_ids.length ? "" : "尚未分配目标群")));
-      row.append(node("span", "status-badge", rule.enabled ? "规则启用 · 待接入采集" : "规则停用"));
-      const actions = node("div", "operation-actions");
-      [["编辑", () => edit(rule)], [rule.enabled ? "停用规则" : "启用规则", () => mutate("/api/qq/sources", Object.assign({}, rule, { enabled: !rule.enabled }))],
+      const row = node("article", "binding-group-row qq-compact-row");
+      const copy = node("div", "qq-row-copy");
+      copy.append(node("span", "binding-group-label", rule.group_name));
+      copy.append(node("span", "binding-group-id", rule.sender ? "仅 " + rule.sender : "全部发送人"));
+      row.append(copy);
+      const actions = node("div", "binding-group-actions");
+      actions.append(node("span", "binding-group-state", rule.enabled ? "已启用" : "已停用"));
+      [["编辑", () => edit(rule)], [rule.enabled ? "停用" : "启用", () => mutate("/api/qq/sources", Object.assign({}, rule, { enabled: !rule.enabled }))],
         ["删除", () => {
           if (window.confirm("删除「" + rule.group_name + "」的监听规则？")) {
             mutate("/api/qq/sources/remove", { id: rule.id });
           }
         }]].forEach(([label, handler]) => {
-        const button = node("button", "text-button", label);
+        const button = node("button", "text-button binding-group-edit", label);
         button.type = "button";
         button.disabled = busy || !ready;
         button.addEventListener("click", handler);
@@ -139,13 +137,16 @@
       $("qq-group-list").append(node("p", "empty-state", "暂无目标 QQ 群，请先在飞书管理中绑定。"));
     }
     data.groups.forEach(group => {
-      const row = node("article", "qq-rule-card");
-      row.append(node("h3", "", group.label + " · " + group.display_id));
+      const row = node("article", "binding-group-row qq-compact-row");
+      const copy = node("div", "qq-row-copy");
+      copy.append(node("span", "binding-group-label", group.label));
+      copy.append(node("span", "binding-group-id", "尾号 " + group.display_id));
       const sources = data.rules.filter(rule => rule.binding_ids.includes(group.binding_id));
-      row.append(node("p", "operation-detail", sources.length ? sources.map(rule =>
+      copy.append(node("span", "binding-group-id", sources.length ? "来源：" + sources.map(rule =>
         rule.group_name + (rule.sender ? " / " + rule.sender : "") + (rule.enabled ? "" : "（停用）")
-      ).join("、") : "未分配发送来源"));
-      const button = node("button", "button button-secondary", "管理发送来源");
+      ).join("、") : "尚未选择来源"));
+      row.append(copy);
+      const button = node("button", "text-button binding-group-edit", "管理来源");
       button.type = "button";
       button.disabled = busy || !ready || group.status !== "active";
       button.addEventListener("click", () => openRouting(group));
@@ -268,9 +269,10 @@
     editingId = null;
     $("qq-rule-form").reset();
     Array.from($("qq-targets").options).forEach(option => { option.selected = false; });
-    $("qq-form-title").textContent = "新增监听规则";
-    $("qq-save-rule").textContent = "保存规则";
-    $("qq-cancel-edit").hidden = true;
+    $("qq-form-title").textContent = "新增监听";
+    $("qq-save-rule").textContent = "保存";
+    $("qq-source-error").textContent = "";
+    $("qq-source-dialog").querySelector("details").open = false;
   }
 
   function edit(rule) {
@@ -281,10 +283,12 @@
     Array.from($("qq-targets").options).forEach(option => {
       option.selected = rule.binding_ids.includes(option.value);
     });
-    $("qq-form-title").textContent = "编辑监听规则";
+    $("qq-form-title").textContent = "编辑监听";
     $("qq-save-rule").textContent = "保存修改";
     $("qq-cancel-edit").hidden = false;
     $("qq-feedback").textContent = "";
+    $("qq-source-error").textContent = "";
+    $("qq-source-dialog").showModal();
     $("qq-source-name").focus();
   }
 
@@ -297,6 +301,7 @@
     try {
       data = await request(path, payload);
       if (resetOnSuccess || (path.endsWith("/remove") && editingId === payload.id)) resetForm();
+      if (resetOnSuccess) $("qq-source-dialog").close();
       $("qq-feedback").textContent = "配置已保存。QQ 通知采集尚未接入，当前不会转发消息。";
     } catch (failure) {
       error(failure.message || "保存失败，请稍后重试");
@@ -317,7 +322,12 @@
     if (editingId) payload.id = editingId;
     mutate("/api/qq/sources", payload, true);
   });
-  $("qq-cancel-edit").addEventListener("click", resetForm);
+  $("qq-add-source").addEventListener("click", () => {
+    resetForm();
+    $("qq-source-dialog").showModal();
+  });
+  $("qq-cancel-edit").addEventListener("click", () => $("qq-source-dialog").close());
+  $("qq-source-close").addEventListener("click", () => $("qq-source-dialog").close());
 
   async function refresh() {
     if (busy || sending) return;

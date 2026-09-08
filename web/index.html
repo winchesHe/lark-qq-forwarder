@@ -251,59 +251,66 @@
         <div id="qq-management" role="tabpanel" aria-labelledby="qq-tab" hidden>
           <section class="intro-grid" aria-labelledby="qq-title">
             <div>
-              <p class="eyebrow accent-text">系统通知转发</p>
-              <h1 id="qq-title">QQ 消息，<br /><em>在这里管理。</em></h1>
-              <p class="lede">管理监听源，为每个目标 QQ 群选择发送来源，也可单独向目标群主动发消息。</p>
+              <p class="eyebrow accent-text">运行概览</p>
+              <h1 id="qq-title">QQ 通知<br /><em>转发到指定群。</em></h1>
+              <p class="lede">在群旁边管理发送来源，在下方添加监听源。主动发消息可单独操作。</p>
             </div>
-            <div class="session-note"><span class="note-kicker">自动转发</span><strong>采集未接入</strong><span>监听规则尚未执行；主动发消息需单独确认</span></div>
+            <div class="session-note"><span class="note-kicker">消息来源</span><strong>QQ 系统通知</strong><span>仅转发通知文本，不支持历史补发</span></div>
           </section>
-          <section class="panel qq-scope-note" aria-label="通知转发范围">
-            <strong>第一版仅转发通知文本</strong>
-            <p class="operation-detail">长文可能截断，图片仅保留通知中的提示；静音、折叠或未弹出的通知可能漏掉，不支持历史补发。群名和发送人需按实际通知验证后才能启用采集。</p>
+          <section class="overview-panel panel" aria-labelledby="qq-overall-title">
+            <div class="panel-heading"><div><p class="eyebrow">总状态</p><h2 id="qq-overall-title">转发链路</h2></div><span class="status-badge">待接入</span></div>
+            <div class="overview-body">
+              <div class="status-orb" aria-hidden="true"><span></span></div>
+              <div class="status-copy"><p class="status-title">自动转发尚未接入</p><p class="status-detail">可以先配置监听源和目标群。主动发消息可独立使用。</p></div>
+            </div>
+            <p class="panel-footnote">通知可能被折叠或截断，静音群可能没有通知；图片只保留通知提示。</p>
           </section>
           <div class="operations-grid qq-management-grid">
             <section class="panel operation-panel" aria-labelledby="qq-rules-title">
-              <div class="panel-heading compact-heading"><div><p class="eyebrow">来源配置</p><h2 id="qq-rules-title">监听源管理</h2></div><span id="qq-rule-count" class="status-badge">读取中</span></div>
-              <div id="qq-rule-list" class="qq-rule-list"><p class="empty-state">正在读取监听配置。</p></div>
-            </section>
-            <section class="panel operation-panel" aria-labelledby="qq-form-title">
-              <div class="panel-heading compact-heading"><div><p class="eyebrow">转发规则</p><h2 id="qq-form-title">新增监听规则</h2></div></div>
-              <form id="qq-rule-form" class="qq-rule-form">
-                <label for="qq-source-name">源 QQ 群名称</label>
-                <input id="qq-source-name" maxlength="80" required placeholder="与系统通知中显示的群名一致" />
-                <label for="qq-source-sender">指定发送人（可选）</label>
-                <input id="qq-source-sender" maxlength="80" placeholder="留空表示群内所有发送人" />
-                <label for="qq-targets">目标 QQ 群（可选，可多选）</label>
-                <select id="qq-targets" multiple size="4" aria-describedby="qq-target-note"></select>
-                <p id="qq-target-note" class="panel-footnote">正在读取已绑定的目标群。</p>
-                <label class="qq-enabled-label"><input id="qq-rule-enabled" type="checkbox" checked />规则启用（采集接入后生效）</label>
-                <div class="operation-actions"><button id="qq-save-rule" type="submit" class="button button-primary" disabled>保存规则</button><button id="qq-cancel-edit" type="button" class="button button-secondary" hidden>取消编辑</button></div>
+              <div class="panel-heading compact-heading"><div><p class="eyebrow">监听管理</p><h2 id="qq-rules-title">监听源与 QQ 群</h2></div><span id="qq-rule-count" class="status-badge">读取中</span></div>
+              <div class="operation-copy"><p class="operation-title">选择每个群接收的来源</p><p class="operation-detail">点击「管理来源」，勾选要转发到该群的 QQ 监听源。</p></div>
+              <div class="binding-groups-heading"><span class="eyebrow">已绑定的 QQ 群 · 接收消息</span><span class="panel-footnote">与飞书管理共用绑定</span></div>
+              <div id="qq-group-list" class="binding-group-list"></div>
+              <div class="listener-inline">
+                <div class="listener-inline-heading"><span class="eyebrow">QQ 监听源 · 读取通知</span><button id="qq-add-source" class="text-button" type="button">新增监听</button></div>
+                <div id="qq-rule-list" class="binding-group-list"><p class="empty-state">正在读取监听配置。</p></div>
                 <p id="qq-feedback" class="panel-footnote" role="status" aria-live="polite"></p>
-              </form>
-            </section>
-          </div>
-          <div class="operations-grid qq-management-grid">
-            <section class="panel operation-panel" aria-labelledby="qq-groups-title">
-              <div class="panel-heading compact-heading"><div><p class="eyebrow">转发目标</p><h2 id="qq-groups-title">群的发送源管理</h2></div></div>
-              <p class="panel-footnote">为每个目标群选择接收哪些 QQ 监听源。未勾选任何来源时，该群不接收自动转发。</p>
-              <div id="qq-group-list" class="qq-rule-list"></div>
+              </div>
             </section>
             <section class="panel operation-panel" aria-labelledby="qq-send-title">
               <div class="panel-heading compact-heading"><div><p class="eyebrow">真实投递</p><h2 id="qq-send-title">主动发消息</h2></div><span id="qq-send-badge" class="status-badge">尚未发送</span></div>
+              <div class="operation-copy"><p class="operation-title">向选中的 QQ 群发消息</p><p class="operation-detail">手动发送不受监听源配置影响。</p></div>
               <form id="qq-send-form" class="qq-rule-form">
                 <label for="qq-send-target">目标 QQ 群</label>
                 <select id="qq-send-target" required></select>
                 <label for="qq-send-text">消息正文</label>
-                <textarea id="qq-send-text" rows="5" required placeholder="输入要发送的文本，最多 3000 字节（约 1000 个汉字）"></textarea>
-                <p class="panel-footnote">此操作直接发送到选定群，与通知采集和监听源规则无关。</p>
-                <button id="qq-send-button" type="submit" class="button button-primary" disabled>预览并发送</button>
+                <textarea id="qq-send-text" rows="5" required placeholder="输入要发送的文本"></textarea>
+                <div class="warning-note"><span aria-hidden="true">!</span>这不是模拟操作，确认后消息会实际发送。</div>
+                <div class="operation-actions"><button id="qq-send-button" type="submit" class="button button-primary" disabled>发送消息</button></div>
                 <p id="qq-send-feedback" class="panel-footnote" role="status" aria-live="polite"></p>
               </form>
             </section>
           </div>
+          <dialog id="qq-source-dialog" class="replay-dialog" aria-labelledby="qq-form-title">
+              <div class="panel-heading compact-heading"><div><p class="eyebrow">QQ 监听源</p><h2 id="qq-form-title">新增监听</h2></div><button id="qq-source-close" type="button" class="text-button">关闭</button></div>
+              <form id="qq-rule-form" class="qq-rule-form">
+                <label for="qq-source-name">监听的 QQ 群名称</label>
+                <input id="qq-source-name" maxlength="80" required placeholder="与系统通知中显示的群名一致" />
+                <label for="qq-source-sender">指定发送人（可选）</label>
+                <input id="qq-source-sender" maxlength="80" placeholder="留空表示群内所有发送人" />
+                <details class="qq-source-targets"><summary>同时设置转发目标（可选）</summary>
+                <label for="qq-targets">转发到哪些 QQ 群</label>
+                <select id="qq-targets" multiple size="4" aria-describedby="qq-target-note"></select>
+                <p id="qq-target-note" class="panel-footnote">正在读取已绑定的目标群。</p>
+                </details>
+                <label class="qq-enabled-label"><input id="qq-rule-enabled" type="checkbox" checked />启用此监听源（自动转发接入后生效）</label>
+                <p id="qq-source-error" class="panel-footnote" role="alert"></p>
+                <div class="dialog-actions"><button id="qq-cancel-edit" type="button" class="button button-secondary">取消</button><button id="qq-save-rule" type="submit" class="button button-primary" disabled>保存</button></div>
+              </form>
+          </dialog>
           <dialog id="qq-routing-dialog" class="replay-dialog" aria-labelledby="qq-routing-title">
             <form id="qq-routing-form">
-              <div class="panel-heading compact-heading"><h2 id="qq-routing-title">管理发送来源</h2></div>
+              <div class="panel-heading compact-heading"><h2 id="qq-routing-title">管理 QQ 群的监听源</h2></div>
               <p id="qq-routing-summary" class="panel-footnote"></p>
               <div id="qq-routing-list" class="routing-dialog-list"></div>
               <p id="qq-routing-feedback" class="panel-footnote" role="status"></p>
